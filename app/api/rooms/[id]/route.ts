@@ -2,48 +2,38 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { rooms, windows, exteriorWalls } from "@/lib/schema";
+import { rooms, windows, exteriorWalls, users } from "@/lib/schema";
 import { eq } from "drizzle-orm";
 import type { InsulationLevel, Direction, WindowSize, GlazingType, Orientation, OccupancyLevel, HeatSourceLevel } from "@/lib/schema";
 
-// ── DELETE /api/rooms/[id] ────────────────────────────────────────────────────
-export async function DELETE(
-  _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const room = (await db.select().from(rooms).where(eq(rooms.id, id)))[0];
-  if (!room) return NextResponse.json({ error: "Room not found." }, { status: 404 });
-
+  if (!room) return NextResponse.json({ error:"Room not found." }, { status:404 });
   await db.delete(rooms).where(eq(rooms.id, id));
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok:true });
 }
 
-// ── PATCH /api/rooms/[id] — full room update ──────────────────────────────────
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const room = (await db.select().from(rooms).where(eq(rooms.id, id)))[0];
-  if (!room) return NextResponse.json({ error: "Room not found." }, { status: 404 });
+  if (!room) return NextResponse.json({ error:"Room not found." }, { status:404 });
 
   let body: {
-    roomName: string; floorNumber: number; isTopFloor: boolean;
-    lengthFt: number; widthFt: number; ceilingHeightFt: number;
-    orientation: Orientation; insulationLevel: InsulationLevel;
-    glazingType: GlazingType; hasCrossBreeze: boolean;
-    occupancySchedule: Record<string, unknown>; heatSourceLevel: HeatSourceLevel;
-    windows: { size: WindowSize; direction: Direction; glazingOverride?: GlazingType }[];
-    exteriorWalls: Direction[];
-    minTempF: number; maxTempF: number;
-    minHumidity: number; maxHumidity: number;
+    roomName:string; floorNumber:number; isTopFloor:boolean;
+    lengthFt:number; widthFt:number; ceilingHeightFt:number;
+    orientation:Orientation; insulationLevel:InsulationLevel;
+    glazingType:GlazingType; hasCrossBreeze:boolean;
+    occupancyLevel:OccupancyLevel;
+    unoccupiedBlocks:unknown[];
+    heatSourceLevel:HeatSourceLevel;
+    windows:{size:WindowSize;direction:Direction;glazingOverride?:GlazingType}[];
+    exteriorWalls:Direction[];
+    minTempF:number; maxTempF:number; minHumidity:number; maxHumidity:number;
   };
-
   try { body = await req.json(); }
-  catch { return NextResponse.json({ error: "Invalid JSON." }, { status: 400 }); }
+  catch { return NextResponse.json({ error:"Invalid JSON." }, { status:400 }); }
 
-  // Update room fields
   await db.update(rooms).set({
     name:            body.roomName.trim(),
     floorNumber:     body.floorNumber,
@@ -55,62 +45,50 @@ export async function PATCH(
     insulationLevel: body.insulationLevel,
     glazingType:     body.glazingType,
     hasCrossBreeze:  body.hasCrossBreeze,
-    occupancySchedule: JSON.stringify(body.occupancySchedule ?? {}),
+    occupancyLevel:  body.occupancyLevel,
+    unoccupiedBlocks:JSON.stringify(body.unoccupiedBlocks ?? []),
     heatSourceLevel: body.heatSourceLevel,
     minTempF:        body.minTempF,
     maxTempF:        body.maxTempF,
     minHumidity:     body.minHumidity,
     maxHumidity:     body.maxHumidity,
-    balancePoint:    null, // will be recalculated
+    balancePoint:    null,
     updatedAt:       new Date().toISOString(),
   }).where(eq(rooms.id, id));
 
-  // Replace windows and walls
   await db.delete(windows).where(eq(windows.roomId, id));
   await db.delete(exteriorWalls).where(eq(exteriorWalls.roomId, id));
 
-  if (body.windows.length > 0) {
-    await db.insert(windows).values(
-      body.windows.map(w => ({
-        roomId: id, size: w.size, direction: w.direction,
-        glazingOverride: w.glazingOverride ?? null,
-      }))
-    );
-  }
+  if (body.windows.length)
+    await db.insert(windows).values(body.windows.map(w=>({ roomId:id, size:w.size, direction:w.direction, glazingOverride:w.glazingOverride??null })));
+  if (body.exteriorWalls.length)
+    await db.insert(exteriorWalls).values(body.exteriorWalls.map(dir=>({ roomId:id, direction:dir })));
 
-  if (body.exteriorWalls.length > 0) {
-    await db.insert(exteriorWalls).values(
-      body.exteriorWalls.map(dir => ({ roomId: id, direction: dir }))
-    );
-  }
-
-  // Recalculate balance point
   const origin = req.nextUrl.origin;
-  fetch(`${origin}/api/rooms/${id}/balance-point`, { method: "POST" })
+  fetch(`${origin}/api/rooms/${id}/balance-point`, { method:"POST" })
     .catch(err => console.error("Balance point recalculation failed:", err));
 
-  return NextResponse.json({ ok: true, roomId: id });
+  return NextResponse.json({ ok:true, roomId:id });
 }
 
-// ── GET /api/rooms/[id] ───────────────────────────────────────────────────────
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const room = (await db.select().from(rooms).where(eq(rooms.id, id)))[0];
-  if (!room) return NextResponse.json({ error: "Room not found." }, { status: 404 });
+  if (!room) return NextResponse.json({ error:"Room not found." }, { status:404 });
 
-  const { users } = await import("@/lib/schema");
   const user = (await db.select().from(users).where(eq(users.id, room.userId)))[0];
-
   const [roomWindows, roomWalls] = await Promise.all([
     db.select().from(windows).where(eq(windows.roomId, id)),
     db.select().from(exteriorWalls).where(eq(exteriorWalls.roomId, id)),
   ]);
 
   return NextResponse.json({
-    room: { ...room, windows: roomWindows, exteriorWalls: roomWalls },
+    room: {
+      ...room,
+      unoccupiedBlocks: JSON.parse(room.unoccupiedBlocks || "[]"),
+      windows: roomWindows,
+      exteriorWalls: roomWalls,
+    },
     userEmail: user?.email ?? "",
   });
 }

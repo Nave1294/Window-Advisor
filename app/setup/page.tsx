@@ -1,31 +1,33 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { OccupancySchedule, OccupancyLevel } from "@/lib/schema";
+import type { UnoccupiedBlock } from "@/lib/schema";
 import { OccupancyTimeline } from "@/app/components/OccupancyTimeline";
+import { UnoccupiedBlocksBuilder } from "@/app/components/UnoccupiedBlocksBuilder";
 
 type Direction   = "N" | "S" | "E" | "W";
 type WindowSize  = "SMALL" | "MEDIUM" | "LARGE";
 type GlazingType = "SINGLE" | "DOUBLE" | "TRIPLE";
 type Insulation  = "BELOW_CODE" | "AT_CODE" | "ABOVE_CODE";
 type Orientation = "NS" | "EW";
+type OccLevel    = "ONE_TWO" | "THREE_FOUR";
 type HeatSource  = "MINIMAL" | "LIGHT_ELECTRONICS" | "HOME_OFFICE" | "KITCHEN_LAUNDRY";
 
-interface WindowEntry { id: string; size: WindowSize; direction: Direction; glazingOverride?: GlazingType; }
+interface WindowEntry { id:string; size:WindowSize; direction:Direction; glazingOverride?:GlazingType; }
 
 interface FormData {
-  email: string; zipCode: string;
-  roomName: string; floorNumber: number; isTopFloor: boolean | null;
-  lengthFt: string; widthFt: string; ceilingHeightFt: string; orientation: Orientation | "";
-  insulationLevel: Insulation | ""; glazingType: GlazingType | ""; hasCrossBreeze: boolean | null;
-  windows: WindowEntry[]; exteriorWalls: Direction[];
-  occupancySchedule: OccupancySchedule;
-  heatSourceLevel: HeatSource | "";
-  minTempF: number; maxTempF: number; minHumidity: number; maxHumidity: number;
+  email:string; zipCode:string;
+  roomName:string; floorNumber:number; isTopFloor:boolean|null;
+  lengthFt:string; widthFt:string; ceilingHeightFt:string; orientation:Orientation|"";
+  insulationLevel:Insulation|""; glazingType:GlazingType|""; hasCrossBreeze:boolean|null;
+  windows:WindowEntry[]; exteriorWalls:Direction[];
+  occupancyLevel:OccLevel;
+  unoccupiedBlocks:UnoccupiedBlock[];
+  heatSourceLevel:HeatSource|"";
+  minTempF:number; maxTempF:number; minHumidity:number; maxHumidity:number;
 }
 
-const DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-const STEPS = ["Your Details","Room Identity","Dimensions","Envelope","Windows","Exterior Walls","Occupancy Schedule","Heat Sources","Comfort Targets","Review"];
+const STEPS = ["Your Details","Room Identity","Dimensions","Envelope","Windows","Exterior Walls","Occupancy","Heat Sources","Comfort Targets","Review"];
 
 const INSULATION_OPTS = [
   { value:"BELOW_CODE" as Insulation, label:"Below Code",  desc:"Older home, minimal insulation" },
@@ -42,46 +44,41 @@ const WINDOW_SIZE_OPTS = [
   { value:"MEDIUM" as WindowSize, label:"Medium", area:"≈ 10 ft²" },
   { value:"LARGE"  as WindowSize, label:"Large",  area:"≈ 20 ft²" },
 ];
-const OCC_LEVELS: { value: OccupancyLevel; label: string }[] = [
-  { value:"EMPTY",      label:"Usually empty" },
-  { value:"ONE_TWO",    label:"1–2 people" },
-  { value:"THREE_FOUR", label:"3–4 people" },
-];
 const HEAT_OPTS = [
-  { value:"MINIMAL"           as HeatSource, label:"Minimal",           desc:"Phone charger, a lamp",             rate:"+0.5" },
-  { value:"LIGHT_ELECTRONICS" as HeatSource, label:"Light electronics", desc:"TV, laptop, streaming device",       rate:"+1.5" },
-  { value:"HOME_OFFICE"       as HeatSource, label:"Home office",       desc:"Desktop PC, multiple monitors",      rate:"+3.0" },
-  { value:"KITCHEN_LAUNDRY"   as HeatSource, label:"Kitchen/laundry",   desc:"Cooking appliances, washer/dryer",   rate:"+5.0" },
+  { value:"MINIMAL"           as HeatSource, label:"Minimal",           desc:"Phone charger, a lamp",           rate:"+0.5" },
+  { value:"LIGHT_ELECTRONICS" as HeatSource, label:"Light electronics", desc:"TV, laptop, streaming device",     rate:"+1.5" },
+  { value:"HOME_OFFICE"       as HeatSource, label:"Home office",       desc:"Desktop PC, multiple monitors",    rate:"+3.0" },
+  { value:"KITCHEN_LAUNDRY"   as HeatSource, label:"Kitchen/laundry",   desc:"Cooking appliances, washer/dryer", rate:"+5.0" },
 ];
 
-function Label({ children, hint }: { children: React.ReactNode; hint?: string }) {
+function Label({ children, hint }: { children:React.ReactNode; hint?:string }) {
   return (
     <div className="mb-1.5">
-      <label className="block text-sm font-semibold" style={{ color:"var(--navy)" }}>{children}</label>
-      {hint && <p className="text-xs mt-0.5" style={{ color:"var(--muted)" }}>{hint}</p>}
+      <label className="block text-sm font-semibold" style={{color:"var(--navy)"}}>{children}</label>
+      {hint && <p className="text-xs mt-0.5" style={{color:"var(--muted)"}}>{hint}</p>}
     </div>
   );
 }
 
-function RadioCard({ selected, onClick, label, desc, badge }: { selected:boolean; onClick:()=>void; label:string; desc?:string; badge?:string }) {
+function RadioCard({ selected, onClick, label, desc, badge }:{ selected:boolean; onClick:()=>void; label:string; desc?:string; badge?:string }) {
   return (
-    <button type="button" className={`option-pill w-full flex items-start gap-3 text-left ${selected?"selected":""}`} style={{ padding:"12px 16px" }} onClick={onClick}>
+    <button type="button" className={`option-pill w-full flex items-start gap-3 text-left ${selected?"selected":""}`} style={{padding:"12px 16px"}} onClick={onClick}>
       <span className="text-base leading-none mt-0.5 shrink-0">{selected?"●":"○"}</span>
       <span className="flex-1">
         <span className="font-semibold">{label}</span>
-        {badge && <span className="ml-2 text-xs px-1.5 py-0.5 rounded" style={{ background:"var(--sky-light)", color:"var(--sky)" }}>{badge}</span>}
-        {desc && <span className="block text-xs mt-0.5" style={{ color:"var(--muted)", fontWeight:400 }}>{desc}</span>}
+        {badge && <span className="ml-2 text-xs px-1.5 py-0.5 rounded" style={{background:"var(--sky-light)",color:"var(--sky)"}}>{badge}</span>}
+        {desc && <span className="block text-xs mt-0.5" style={{color:"var(--muted)",fontWeight:400}}>{desc}</span>}
       </span>
     </button>
   );
 }
 
-function CompassGrid({ selected, onToggle }: { selected:Direction[]; onToggle:(d:Direction)=>void }) {
+function CompassGrid({ selected, onToggle }:{ selected:Direction[]; onToggle:(d:Direction)=>void }) {
   return (
-    <div className="grid gap-2" style={{ gridTemplateColumns:"52px 52px 52px", gridTemplateRows:"52px 52px 52px", width:"fit-content" }}>
+    <div className="grid gap-2" style={{gridTemplateColumns:"52px 52px 52px",gridTemplateRows:"52px 52px 52px",width:"fit-content"}}>
       <div/><button type="button" className={`compass-btn ${selected.includes("N")?"selected":""}`} onClick={()=>onToggle("N")}>N</button><div/>
       <button type="button" className={`compass-btn ${selected.includes("W")?"selected":""}`} onClick={()=>onToggle("W")}>W</button>
-      <div className="flex items-center justify-center" style={{ background:"var(--cream-dark)", borderRadius:8 }}>
+      <div className="flex items-center justify-center" style={{background:"var(--cream-dark)",borderRadius:8}}>
         <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="2" fill="var(--muted)"/><line x1="10" y1="2" x2="10" y2="6" stroke="var(--muted)" strokeWidth="1.5" strokeLinecap="round"/><line x1="10" y1="14" x2="10" y2="18" stroke="var(--muted)" strokeWidth="1.5" strokeLinecap="round"/><line x1="2" y1="10" x2="6" y2="10" stroke="var(--muted)" strokeWidth="1.5" strokeLinecap="round"/><line x1="14" y1="10" x2="18" y2="10" stroke="var(--muted)" strokeWidth="1.5" strokeLinecap="round"/></svg>
       </div>
       <button type="button" className={`compass-btn ${selected.includes("E")?"selected":""}`} onClick={()=>onToggle("E")}>E</button>
@@ -89,90 +86,6 @@ function CompassGrid({ selected, onToggle }: { selected:Direction[]; onToggle:(d
     </div>
   );
 }
-
-// ── Occupancy schedule builder ────────────────────────────────────────────────
-
-function OccupancyScheduleBuilder({ schedule, onChange }: {
-  schedule: OccupancySchedule;
-  onChange: (s: OccupancySchedule) => void;
-}) {
-  function updateDay(dayIdx: number, patch: Partial<OccupancySchedule[number]>) {
-    const existing = schedule[dayIdx] ?? { occupied: false, startHour: 8, endHour: 22, level: "ONE_TWO" as OccupancyLevel };
-    onChange({ ...schedule, [dayIdx]: { ...existing, ...patch } });
-  }
-
-  function formatHour(h: number) {
-    if (h === 0) return "12 AM";
-    if (h === 12) return "12 PM";
-    if (h === 24) return "12 AM";
-    return h < 12 ? `${h} AM` : `${h-12} PM`;
-  }
-
-  return (
-    <div className="space-y-3">
-      {DAYS.map((dayName, dayIdx) => {
-        const period = schedule[dayIdx];
-        const occupied = period?.occupied ?? false;
-        return (
-          <div key={dayIdx} className="rounded-xl overflow-hidden" style={{ border:`1.5px solid ${occupied ? "var(--sky)" : "var(--border)"}` }}>
-            {/* Day header */}
-            <div className="flex items-center justify-between px-4 py-3"
-              style={{ background: occupied ? "var(--sky-light)" : "var(--cream-dark)" }}>
-              <span className="font-semibold text-sm" style={{ color:"var(--navy)" }}>{dayName}</span>
-              <button type="button"
-                className={`option-pill text-xs ${occupied?"selected":""}`}
-                style={{ padding:"5px 12px" }}
-                onClick={() => updateDay(dayIdx, { occupied: !occupied })}>
-                {occupied ? "Occupied" : "Unoccupied"}
-              </button>
-            </div>
-
-            {/* Expanded options when occupied */}
-            {occupied && (
-              <div className="px-4 py-3 space-y-3" style={{ background:"var(--white)" }}>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>From</Label>
-                    <select className="field text-sm" value={period?.startHour ?? 8}
-                      onChange={e => updateDay(dayIdx, { startHour: +e.target.value })}>
-                      {Array.from({length:24},(_,i)=>(
-                        <option key={i} value={i}>{formatHour(i)}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <Label>Until</Label>
-                    <select className="field text-sm" value={period?.endHour ?? 22}
-                      onChange={e => updateDay(dayIdx, { endHour: +e.target.value })}>
-                      {Array.from({length:24},(_,i)=>(
-                        <option key={i+1} value={i+1}>{formatHour(i+1)}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <Label>How many people?</Label>
-                  <div className="flex gap-2">
-                    {OCC_LEVELS.filter(l => l.value !== "EMPTY").map(l => (
-                      <button key={l.value} type="button"
-                        className={`option-pill flex-1 text-sm ${(period?.level ?? "ONE_TWO") === l.value ? "selected" : ""}`}
-                        style={{ padding:"8px 10px" }}
-                        onClick={() => updateDay(dayIdx, { level: l.value })}>
-                        {l.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ── Main component ─────────────────────────────────────────────────────────────
 
 export default function SetupPage() {
   const router = useRouter();
@@ -186,17 +99,17 @@ export default function SetupPage() {
     lengthFt:"", widthFt:"", ceilingHeightFt:"", orientation:"",
     insulationLevel:"", glazingType:"", hasCrossBreeze:null,
     windows:[], exteriorWalls:[],
-    occupancySchedule:{},
+    occupancyLevel:"ONE_TWO",
+    unoccupiedBlocks:[],
     heatSourceLevel:"",
     minTempF:68, maxTempF:74, minHumidity:40, maxHumidity:55,
   });
 
-  const [pendingWin, setPendingWin] = useState<{ size:WindowSize|""; direction:Direction|""; glazingOverride:GlazingType|"useRoom" }>
-    ({ size:"", direction:"", glazingOverride:"useRoom" });
+  const [pendingWin, setPendingWin] = useState<{size:WindowSize|"";direction:Direction|"";glazingOverride:GlazingType|"useRoom"}>
+    ({size:"",direction:"",glazingOverride:"useRoom"});
 
   function set<K extends keyof FormData>(key:K, value:FormData[K]) {
-    setForm(prev => ({ ...prev, [key]:value }));
-    setError("");
+    setForm(prev=>({...prev,[key]:value})); setError("");
   }
 
   function validate(): string {
@@ -207,7 +120,7 @@ export default function SetupPage() {
         break;
       case 1:
         if (!form.roomName.trim()) return "Give this room a name.";
-        if (form.isTopFloor === null) return "Indicate whether this is the top floor.";
+        if (form.isTopFloor===null) return "Indicate whether this is the top floor.";
         break;
       case 2: {
         const l=parseFloat(form.lengthFt),w=parseFloat(form.widthFt),h=parseFloat(form.ceilingHeightFt);
@@ -225,8 +138,8 @@ export default function SetupPage() {
       case 4: if (!form.windows.length) return "Add at least one window."; break;
       case 5: if (!form.exteriorWalls.length) return "Select at least one exterior wall."; break;
       case 6: {
-        const occupiedDays = Object.values(form.occupancySchedule).filter(p => p.occupied);
-        if (occupiedDays.some(p => p.endHour <= p.startHour)) return "End time must be after start time for all occupied days.";
+        const bad = form.unoccupiedBlocks.filter(b => b.endHour <= b.startHour);
+        if (bad.length) return "All unoccupied windows must have an end time after the start time.";
         break;
       }
       case 7: if (!form.heatSourceLevel) return "Select a heat source level."; break;
@@ -265,24 +178,20 @@ export default function SetupPage() {
           lengthFt:parseFloat(form.lengthFt), widthFt:parseFloat(form.widthFt), ceilingHeightFt:parseFloat(form.ceilingHeightFt),
           orientation:form.orientation, insulationLevel:form.insulationLevel,
           glazingType:form.glazingType, hasCrossBreeze:form.hasCrossBreeze,
-          occupancySchedule:form.occupancySchedule, heatSourceLevel:form.heatSourceLevel,
+          occupancyLevel:form.occupancyLevel,
+          unoccupiedBlocks:form.unoccupiedBlocks,
+          heatSourceLevel:form.heatSourceLevel,
           windows:form.windows.map(w=>({size:w.size,direction:w.direction,glazingOverride:w.glazingOverride})),
           exteriorWalls:form.exteriorWalls,
-          minTempF:form.minTempF, maxTempF:form.maxTempF, minHumidity:form.minHumidity, maxHumidity:form.maxHumidity,
+          minTempF:form.minTempF, maxTempF:form.maxTempF,
+          minHumidity:form.minHumidity, maxHumidity:form.maxHumidity,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error??"Something went wrong.");
       router.push(`/dashboard/${encodeURIComponent(form.email)}`);
-    } catch(e) { setError(e instanceof Error?e.message:"Submission failed."); }
+    } catch(e){ setError(e instanceof Error?e.message:"Submission failed."); }
     finally { setLoading(false); }
-  }
-
-  function schedulePreview(): string {
-    const occupiedDays = Object.entries(form.occupancySchedule)
-      .filter(([,p])=>p.occupied)
-      .map(([d])=>DAYS[+d].slice(0,3));
-    return occupiedDays.length===0 ? "No occupied days set" : occupiedDays.join(", ");
   }
 
   function renderStep() {
@@ -307,7 +216,7 @@ export default function SetupPage() {
             </div>
           </div>
           <div>
-            <Label hint="Is there a roof directly above, or another floor?">Top floor?</Label>
+            <Label>Top floor?</Label>
             <div className="flex gap-3 mt-2">
               {[{v:true,label:"Yes — roof above"},{v:false,label:"No — floor above"}].map(({v,label})=>(
                 <button key={label} type="button" className={`option-pill flex-1 ${form.isTopFloor===v?"selected":""}`} onClick={()=>set("isTopFloor",v)}>{label}</button>
@@ -381,19 +290,41 @@ export default function SetupPage() {
         </div>
       );
       case 6: return (
-        <div className="fade-up">
-          <p className="text-sm mb-5 leading-relaxed" style={{color:"var(--muted)"}}>
-            Toggle each day the room is occupied and set the hours. Unoccupied hours produce less internal heat, which affects when we recommend opening windows.
-          </p>
-          <OccupancyScheduleBuilder schedule={form.occupancySchedule} onChange={s=>set("occupancySchedule",s)}/>
-          {Object.values(form.occupancySchedule).every(p=>!p.occupied)&&(
-            <div className="mt-4 p-3 rounded-xl text-xs" style={{background:"var(--amber-light)",color:"var(--amber)"}}>
-              No days are marked occupied — we'll use a minimal heat load. That's fine for storage rooms or rarely-used spaces.
+        <div className="fade-up space-y-6">
+          <div>
+            <Label hint="Typical number of people when the room is in use">How many people use this room?</Label>
+            <div className="flex gap-3 mt-2">
+              {[
+                { v:"ONE_TWO"    as OccLevel, label:"1–2 people", desc:"Typical occupancy" },
+                { v:"THREE_FOUR" as OccLevel, label:"3–4 people", desc:"Busier room" },
+              ].map(({v,label,desc})=>(
+                <button key={v} type="button"
+                  className={`option-pill flex-1 text-left ${form.occupancyLevel===v?"selected":""}`}
+                  style={{padding:"12px 14px"}}
+                  onClick={()=>set("occupancyLevel",v)}>
+                  <span className="block font-semibold">{label}</span>
+                  <span className="block text-xs mt-0.5" style={{color:"var(--muted)",fontWeight:400}}>{desc}</span>
+                </button>
+              ))}
             </div>
-          )}
-          {Object.values(form.occupancySchedule).some(p=>p.occupied)&&(
-            <div className="mt-5 p-4 rounded-xl" style={{background:"var(--white)",border:"1px solid var(--border)"}}>
-              <OccupancyTimeline schedule={form.occupancySchedule}/>
+          </div>
+
+          <div>
+            <Label hint="Add windows of time when the room is empty — the room is assumed occupied by default">
+              When is the room unoccupied? (optional)
+            </Label>
+            <p className="text-xs mb-3" style={{color:"var(--muted)"}}>
+              Add as many blocks as you need. Example: overnight 11 PM–7 AM on all days, plus 9 AM–5 PM on weekdays if you work away from home.
+            </p>
+            <UnoccupiedBlocksBuilder
+              blocks={form.unoccupiedBlocks}
+              onChange={b=>set("unoccupiedBlocks",b)}
+            />
+          </div>
+
+          {form.unoccupiedBlocks.length > 0 && (
+            <div className="p-4 rounded-xl" style={{background:"var(--white)",border:"1px solid var(--border)"}}>
+              <OccupancyTimeline blocks={form.unoccupiedBlocks}/>
             </div>
           )}
         </div>
@@ -438,7 +369,7 @@ export default function SetupPage() {
             { heading:"Your Details", items:[{label:"Email",value:form.email},{label:"ZIP",value:form.zipCode}] },
             { heading:"Room", items:[{label:"Name",value:form.roomName},{label:"Floor",value:`Floor ${form.floorNumber}${form.isTopFloor?" (top)":""}`},{label:"Size",value:`${form.lengthFt}×${form.widthFt} ft, ${form.ceilingHeightFt} ft ceiling`},{label:"Orientation",value:form.orientation==="NS"?"N–S":"E–W"}] },
             { heading:"Envelope", items:[{label:"Insulation",value:INSULATION_OPTS.find(o=>o.value===form.insulationLevel)?.label??""},{label:"Glazing",value:GLAZING_OPTS.find(o=>o.value===form.glazingType)?.label??""},{label:"Cross-breeze",value:form.hasCrossBreeze?"Yes":"No"}] },
-            { heading:"Occupancy", items:[{label:"Occupied days",value:schedulePreview()},{label:"Heat sources",value:HEAT_OPTS.find(o=>o.value===form.heatSourceLevel)?.label??""}] },
+            { heading:"Occupancy", items:[{label:"Headcount",value:form.occupancyLevel==="THREE_FOUR"?"3–4 people":"1–2 people"},{label:"Unoccupied blocks",value:form.unoccupiedBlocks.length>0?`${form.unoccupiedBlocks.length} block${form.unoccupiedBlocks.length>1?"s":""}  defined`:"None (always occupied)"},{label:"Heat sources",value:HEAT_OPTS.find(o=>o.value===form.heatSourceLevel)?.label??""}] },
             { heading:"Comfort", items:[{label:"Temperature",value:`${form.minTempF}°–${form.maxTempF}°F`},{label:"Humidity",value:`${form.minHumidity}%–${form.maxHumidity}%`}] },
           ].map(s=>(
             <div key={s.heading} className="card p-4">

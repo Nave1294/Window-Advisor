@@ -10,17 +10,19 @@ export type OccupancyLevel   = "EMPTY" | "ONE_TWO" | "THREE_FOUR";
 export type HeatSourceLevel  = "MINIMAL" | "LIGHT_ELECTRONICS" | "HOME_OFFICE" | "KITCHEN_LAUNDRY";
 export type FeedbackType     = "TOO_HOT" | "TOO_COLD";
 
-// Occupancy schedule — one entry per day of week
-// dayOfWeek: 0=Sun, 1=Mon ... 6=Sat
-export interface OccupancyPeriod {
-  occupied:   boolean;
-  startHour:  number;       // 0–23
-  endHour:    number;       // 0–23 (exclusive)
-  level:      OccupancyLevel;
+/**
+ * A block of time when the room is NOT occupied.
+ * days: array of day-of-week indices (0=Sun, 1=Mon … 6=Sat)
+ * startHour / endHour: 0–24 in local time
+ */
+export interface UnoccupiedBlock {
+  id:        string;
+  startHour: number;
+  endHour:   number;
+  days:      number[];   // e.g. [1,2,3,4,5] = weekdays
 }
-export type OccupancySchedule = Record<number, OccupancyPeriod>; // key = dayOfWeek 0-6
 
-// ── users ────────────────────────────────────────────────────────────────────
+// ── users ─────────────────────────────────────────────────────────────────────
 export const users = sqliteTable("users", {
   id:        text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
@@ -28,7 +30,7 @@ export const users = sqliteTable("users", {
   zipCode:   text("zip_code").notNull(),
 });
 
-// ── rooms ────────────────────────────────────────────────────────────────────
+// ── rooms ─────────────────────────────────────────────────────────────────────
 export const rooms = sqliteTable("rooms", {
   id:        text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
@@ -49,25 +51,24 @@ export const rooms = sqliteTable("rooms", {
   glazingType:     text("glazing_type").$type<GlazingType>().notNull().default("DOUBLE"),
   hasCrossBreeze:  integer("has_cross_breeze", { mode: "boolean" }).notNull(),
 
-  // Occupancy stored as JSON schedule instead of flat level
-  occupancySchedule: text("occupancy_schedule").notNull().default("{}"),
-  heatSourceLevel:   text("heat_source_level").$type<HeatSourceLevel>().notNull().default("LIGHT_ELECTRONICS"),
+  // Typical headcount when the room IS occupied
+  occupancyLevel: text("occupancy_level").$type<OccupancyLevel>().notNull().default("ONE_TWO"),
+
+  // JSON: UnoccupiedBlock[] — blocks when the room is NOT occupied
+  unoccupiedBlocks: text("unoccupied_blocks").notNull().default("[]"),
+
+  heatSourceLevel: text("heat_source_level").$type<HeatSourceLevel>().notNull().default("LIGHT_ELECTRONICS"),
 
   minTempF:    real("min_temp_f").notNull(),
   maxTempF:    real("max_temp_f").notNull(),
   minHumidity: integer("min_humidity").notNull(),
   maxHumidity: integer("max_humidity").notNull(),
 
-  // Derived
   balancePoint: real("balance_point"),
-
-  // Comfort feedback bias — adjusted by user feedback, bounded ±5°F
-  // Positive = room runs warm → lower effective balance point (open more aggressively)
-  // Negative = room runs cold → raise effective balance point (open more conservatively)
-  comfortBias: real("comfort_bias").notNull().default(0),
+  comfortBias:  real("comfort_bias").notNull().default(0),
 });
 
-// ── windows ──────────────────────────────────────────────────────────────────
+// ── windows ───────────────────────────────────────────────────────────────────
 export const windows = sqliteTable("windows", {
   id:              text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   roomId:          text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
@@ -88,7 +89,7 @@ export const feedback = sqliteTable("feedback", {
   id:        text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   roomId:    text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
   type:      text("type").$type<FeedbackType>().notNull(),
-  date:      text("date").notNull(),      // YYYY-MM-DD the recommendation was for
+  date:      text("date").notNull(),
   createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
@@ -96,9 +97,9 @@ export const feedback = sqliteTable("feedback", {
 export const recommendations = sqliteTable(
   "recommendations",
   {
-    id:     text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-    roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
-    date:   text("date").notNull(),
+    id:          text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    roomId:      text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+    date:        text("date").notNull(),
     shouldOpen:  integer("should_open",  { mode: "boolean" }).notNull(),
     openPeriods: text("open_periods"),
     reasoning:   text("reasoning").notNull(),
@@ -118,7 +119,6 @@ export type Window           = typeof windows.$inferSelect;
 export type NewWindow        = typeof windows.$inferInsert;
 export type ExteriorWall     = typeof exteriorWalls.$inferSelect;
 export type NewExteriorWall  = typeof exteriorWalls.$inferInsert;
-export type Feedback         = typeof feedback.$inferSelect;
 export type Recommendation   = typeof recommendations.$inferSelect;
 export type NewRecommendation = typeof recommendations.$inferInsert;
 export type RoomFull = Room & { windows: Window[]; exteriorWalls: ExteriorWall[] };

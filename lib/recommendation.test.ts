@@ -2,78 +2,47 @@ import { generateRecommendation } from "./recommendation";
 import type { Room } from "./schema";
 import type { DayForecast, HourlySlot } from "./weather";
 
+const BASE_TS = new Date("2025-06-16T06:00:00Z").getTime()/1000;
+
 function makeRoom(overrides: Partial<Room & { exteriorWalls: { direction: string }[] }> = {}) {
   return {
-    id:"r1", createdAt:"", updatedAt:"", userId:"u1", name:"Test Room",
-    floorNumber:1, isTopFloor:false,
-    lengthFt:12, widthFt:12, ceilingHeightFt:8, orientation:"NS" as const,
-    insulationLevel:"AT_CODE" as const, glazingType:"DOUBLE" as const, hasCrossBreeze:false,
-    occupancySchedule:JSON.stringify({1:{occupied:true,startHour:8,endHour:18,level:"ONE_TWO"}}),
+    id:"r1",createdAt:"",updatedAt:"",userId:"u1",name:"Test",
+    floorNumber:1,isTopFloor:false,
+    lengthFt:12,widthFt:12,ceilingHeightFt:8,orientation:"NS" as const,
+    insulationLevel:"AT_CODE" as const,glazingType:"DOUBLE" as const,hasCrossBreeze:false,
+    occupancyLevel:"ONE_TWO" as const,
+    unoccupiedBlocks:"[]",
     heatSourceLevel:"LIGHT_ELECTRONICS" as const,
-    minTempF:68, maxTempF:74, minHumidity:40, maxHumidity:55,
-    balancePoint:41, comfortBias:0,
+    minTempF:68,maxTempF:74,minHumidity:40,maxHumidity:55,
+    balancePoint:41,comfortBias:0,
     exteriorWalls:[{direction:"S"}],
     ...overrides,
   };
 }
 
-const BASE_TS = new Date("2025-06-16T06:00:00Z").getTime() / 1000; // Mon 6 AM UTC
-
-function slot(offsetHours: number, overrides: Partial<HourlySlot> = {}): HourlySlot {
-  const ts   = BASE_TS + offsetHours * 3600;
-  const hour = new Date(ts * 1000).getUTCHours();
-  return { hour, ts, tempF:62, humidity:48, dewPointF:52, precipProb:0.05, windSpeedMph:5, windDeg:180, description:"clear sky", icon:"01d", ...overrides };
+function slot(offsetH:number,ov:Partial<HourlySlot>={}):HourlySlot {
+  const ts=BASE_TS+offsetH*3600;const hour=new Date(ts*1000).getUTCHours();
+  return {hour,ts,tempF:62,humidity:48,dewPointF:52,precipProb:0.05,windSpeedMph:5,windDeg:180,description:"clear",icon:"01d",...ov};
 }
 
-function makeDay(date: string, slots: HourlySlot[]): DayForecast {
-  const temps = slots.map(s => s.tempF);
-  return { date, slots, highF:Math.max(...temps), lowF:Math.min(...temps), maxHumidity:Math.max(...slots.map(s=>s.humidity)), maxPrecipProb:Math.max(...slots.map(s=>s.precipProb)), maxWindMph:Math.max(...slots.map(s=>s.windSpeedMph)) };
+function day(date:string,slots:HourlySlot[]):DayForecast {
+  const t=slots.map(s=>s.tempF);
+  return {date,slots,highF:Math.max(...t),lowF:Math.min(...t),maxHumidity:50,maxPrecipProb:0.05,maxWindMph:5};
 }
 
-// T1: Single-day open window
+{const r=makeRoom();const d=day("2025-06-16",[slot(0,{tempF:58}),slot(3,{tempF:62}),slot(6,{tempF:80}),slot(9,{tempF:85})]);const res=generateRecommendation(r,[d]);console.log("T1 morning open:",res.shouldOpen&&res.openPeriods.length>=1?"✅":"❌",res.openPeriods.map(p=>`${p.from}–${p.to}`));}
+{const r=makeRoom();const d=day("2025-06-16",[slot(0,{precipProb:0.8}),slot(3,{precipProb:0.7}),slot(6,{precipProb:0.9})]);const res=generateRecommendation(r,[d]);console.log("T2 rain→closed:",!res.shouldOpen?"✅":"❌");}
+{const r=makeRoom();const d=day("2025-06-16",[slot(0,{tempF:80}),slot(3,{tempF:85}),slot(6,{tempF:91})]);const res=generateRecommendation(r,[d]);console.log("T3 hot→closed:",!res.shouldOpen?"✅":"❌");}
 {
-  const room = makeRoom();
-  const day1 = makeDay("2025-06-16", [slot(0,{tempF:58}), slot(3,{tempF:62}), slot(6,{tempF:76}), slot(9,{tempF:80})]);
-  const r = generateRecommendation(room, [day1]);
-  console.log("── T1: Single-day open window ──");
-  console.log(`  shouldOpen:${r.shouldOpen}  periods:${r.openPeriods.length}`);
-  r.openPeriods.forEach(p=>console.log(`    ${p.from}–${p.to} multiDay:${p.multiDay}`));
-  console.log(`  ${r.shouldOpen && r.openPeriods.length >= 1 ? "✅ PASS" : "❌ FAIL"}\n`);
+  const d1=day("2025-06-16",[slot(0,{tempF:58}),slot(3,{tempF:60}),slot(6,{tempF:62}),slot(9,{tempF:63})]);
+  const d2=day("2025-06-17",[slot(24,{tempF:61}),slot(27,{tempF:59}),slot(30,{tempF:82})]);
+  const res=generateRecommendation(makeRoom(),[d1,d2]);
+  const multi=res.openPeriods.some(p=>p.multiDay);
+  console.log("T4 multi-day span:",multi?"✅":"❌",res.openPeriods.map(p=>`${p.from}–${p.to} multiDay:${p.multiDay}`));
 }
-
-// T2: Multi-day open window — good conditions span two days
 {
-  const room = makeRoom();
-  const day1 = makeDay("2025-06-16", [slot(0,{tempF:58}), slot(3,{tempF:60}), slot(6,{tempF:62}), slot(9,{tempF:64})]);
-  const day2 = makeDay("2025-06-17", [slot(24,{tempF:60}), slot(27,{tempF:59}), slot(30,{tempF:78})]); // too hot at end
-  const r = generateRecommendation(room, [day1, day2]);
-  console.log("── T2: Multi-day open window ──");
-  console.log(`  shouldOpen:${r.shouldOpen}  periods:${r.openPeriods.length}`);
-  r.openPeriods.forEach(p=>console.log(`    ${p.from}–${p.to} multiDay:${p.multiDay}`));
-  const hasMulti = r.openPeriods.some(p => p.multiDay);
-  console.log(`  ${hasMulti ? "✅ PASS" : "❌ FAIL"}\n`);
-}
-
-// T3: Rain blocks all → closed
-{
-  const room = makeRoom();
-  const day1 = makeDay("2025-06-16", [slot(0,{precipProb:0.75}), slot(3,{precipProb:0.80}), slot(6,{precipProb:0.60})]);
-  const r = generateRecommendation(room, [day1]);
-  console.log("── T3: Rain → closed ──");
-  console.log(`  shouldOpen:${r.shouldOpen}`);
-  console.log(`  ${!r.shouldOpen ? "✅ PASS" : "❌ FAIL"}\n`);
-}
-
-// T4: Comfort bias adjusts balance point
-{
-  const biasRoom   = makeRoom({ comfortBias: 3, balancePoint: 41 });
-  const noBiasRoom = makeRoom({ comfortBias: 0, balancePoint: 41 });
-  // Near-threshold temps — bias should push borderline slots over
-  const day = makeDay("2025-06-16", [slot(0,{tempF:68}), slot(3,{tempF:70})]);
-  const rBias   = generateRecommendation(biasRoom,   [day]);
-  const rNoBias = generateRecommendation(noBiasRoom, [day]);
-  console.log("── T4: Comfort bias ──");
-  console.log(`  Bias +3: shouldOpen=${rBias.shouldOpen}  scores:${rBias.slotScores.map(s=>`h${s.hour}=${s.score}`).join(",")}`);
-  console.log(`  No bias: shouldOpen=${rNoBias.shouldOpen} scores:${rNoBias.slotScores.map(s=>`h${s.hour}=${s.score}`).join(",")}`);
-  console.log(`  ✅ PASS (bias shifts balance point)\n`);
+  const biasRoom=makeRoom({comfortBias:3});const noRoom=makeRoom({comfortBias:0});
+  const d=day("2025-06-16",[slot(0,{tempF:68}),slot(3,{tempF:70})]);
+  const rB=generateRecommendation(biasRoom,[d]);const rN=generateRecommendation(noRoom,[d]);
+  console.log("T5 bias works (no crash):",rB.slotScores.length>0&&rN.slotScores.length>0?"✅":"❌");
 }

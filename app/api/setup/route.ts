@@ -4,45 +4,45 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { users, rooms, windows, exteriorWalls } from "@/lib/schema";
 import { eq } from "drizzle-orm";
-import type { InsulationLevel, Direction, WindowSize, GlazingType, Orientation, HeatSourceLevel, OccupancySchedule } from "@/lib/schema";
-
-interface WindowPayload { size: WindowSize; direction: Direction; glazingOverride?: GlazingType; }
+import type { InsulationLevel, Direction, WindowSize, GlazingType, Orientation, OccupancyLevel, HeatSourceLevel, UnoccupiedBlock } from "@/lib/schema";
 
 interface SetupPayload {
-  email: string; zipCode: string; roomName: string;
-  floorNumber: number; isTopFloor: boolean;
-  lengthFt: number; widthFt: number; ceilingHeightFt: number;
-  orientation: Orientation; insulationLevel: InsulationLevel;
-  glazingType: GlazingType; hasCrossBreeze: boolean;
-  occupancySchedule: OccupancySchedule;
-  heatSourceLevel: HeatSourceLevel;
-  windows: WindowPayload[]; exteriorWalls: Direction[];
-  minTempF: number; maxTempF: number; minHumidity: number; maxHumidity: number;
+  email:string; zipCode:string; roomName:string;
+  floorNumber:number; isTopFloor:boolean;
+  lengthFt:number; widthFt:number; ceilingHeightFt:number;
+  orientation:Orientation; insulationLevel:InsulationLevel;
+  glazingType:GlazingType; hasCrossBreeze:boolean;
+  occupancyLevel:OccupancyLevel;
+  unoccupiedBlocks:UnoccupiedBlock[];
+  heatSourceLevel:HeatSourceLevel;
+  windows:{size:WindowSize;direction:Direction;glazingOverride?:GlazingType}[];
+  exteriorWalls:Direction[];
+  minTempF:number; maxTempF:number; minHumidity:number; maxHumidity:number;
 }
 
 export async function POST(req: NextRequest) {
   let body: SetupPayload;
   try { body = await req.json(); }
-  catch { return NextResponse.json({ error: "Invalid JSON." }, { status: 400 }); }
+  catch { return NextResponse.json({ error:"Invalid JSON." }, { status:400 }); }
 
   const { email, zipCode, roomName, floorNumber, isTopFloor, lengthFt, widthFt, ceilingHeightFt,
           orientation, insulationLevel, glazingType, hasCrossBreeze,
-          occupancySchedule, heatSourceLevel,
+          occupancyLevel, unoccupiedBlocks, heatSourceLevel,
           windows: windowList, exteriorWalls: wallList,
           minTempF, maxTempF, minHumidity, maxHumidity } = body;
 
   if (!email?.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/))
-    return NextResponse.json({ error: "Invalid email." }, { status: 422 });
+    return NextResponse.json({ error:"Invalid email." }, { status:422 });
   if (!zipCode?.match(/^\d{5}$/))
-    return NextResponse.json({ error: "Invalid ZIP." }, { status: 422 });
+    return NextResponse.json({ error:"Invalid ZIP." }, { status:422 });
   if (!roomName?.trim())
-    return NextResponse.json({ error: "Room name required." }, { status: 422 });
+    return NextResponse.json({ error:"Room name required." }, { status:422 });
   if (!windowList?.length)
-    return NextResponse.json({ error: "At least one window required." }, { status: 422 });
+    return NextResponse.json({ error:"At least one window required." }, { status:422 });
   if (!wallList?.length)
-    return NextResponse.json({ error: "At least one exterior wall required." }, { status: 422 });
+    return NextResponse.json({ error:"At least one exterior wall required." }, { status:422 });
   if (minTempF >= maxTempF || minHumidity >= maxHumidity)
-    return NextResponse.json({ error: "Invalid comfort range." }, { status: 422 });
+    return NextResponse.json({ error:"Invalid comfort range." }, { status:422 });
 
   try {
     let user = (await db.select().from(users).where(eq(users.email, email)))[0];
@@ -54,35 +54,37 @@ export async function POST(req: NextRequest) {
     }
 
     const [room] = await db.insert(rooms).values({
-      userId: user.id, name: roomName.trim(),
-      floorNumber: floorNumber ?? 1, isTopFloor: isTopFloor ?? false,
+      userId:user.id, name:roomName.trim(),
+      floorNumber:floorNumber??1, isTopFloor:isTopFloor??false,
       lengthFt, widthFt, ceilingHeightFt,
-      orientation: orientation ?? "NS", insulationLevel,
-      glazingType: glazingType ?? "DOUBLE", hasCrossBreeze,
-      occupancySchedule: JSON.stringify(occupancySchedule ?? {}),
-      heatSourceLevel: heatSourceLevel ?? "LIGHT_ELECTRONICS",
+      orientation:orientation??"NS", insulationLevel,
+      glazingType:glazingType??"DOUBLE", hasCrossBreeze,
+      occupancyLevel:occupancyLevel??"ONE_TWO",
+      unoccupiedBlocks:JSON.stringify(unoccupiedBlocks??[]),
+      heatSourceLevel:heatSourceLevel??"LIGHT_ELECTRONICS",
       minTempF, maxTempF, minHumidity, maxHumidity,
-      balancePoint: null, comfortBias: 0,
+      balancePoint:null, comfortBias:0,
     }).returning();
 
-    await db.insert(windows).values(windowList.map(w => ({ roomId: room.id, size: w.size, direction: w.direction, glazingOverride: w.glazingOverride ?? null })));
-    await db.insert(exteriorWalls).values(wallList.map(dir => ({ roomId: room.id, direction: dir })));
+    await db.insert(windows).values(
+      windowList.map(w=>({ roomId:room.id, size:w.size, direction:w.direction, glazingOverride:w.glazingOverride??null }))
+    );
+    await db.insert(exteriorWalls).values(
+      wallList.map(dir=>({ roomId:room.id, direction:dir }))
+    );
 
     const origin = req.nextUrl.origin;
-
-    // Calculate balance point and send confirmation email in parallel (fire-and-forget)
     Promise.all([
-      fetch(`${origin}/api/rooms/${room.id}/balance-point`, { method: "POST" })
+      fetch(`${origin}/api/rooms/${room.id}/balance-point`, { method:"POST" })
         .then(async r => {
           if (r.ok) {
-            // After balance point is ready, send confirmation email
             const bpData = await r.json();
             const { sendConfirmationEmail } = await import("@/lib/email");
             let cityName = "";
             try { const { resolveZip } = await import("@/lib/weather"); const geo = await resolveZip(zipCode); cityName = geo.city; } catch { /* ok */ }
             await sendConfirmationEmail({
-              to: email, roomName: roomName.trim(), floorNumber: floorNumber ?? 1,
-              balancePoint: bpData.balancePoint ?? null,
+              to:email, roomName:roomName.trim(), floorNumber:floorNumber??1,
+              balancePoint:bpData.balancePoint??null,
               minTempF, maxTempF, minHumidity, maxHumidity, cityName,
             });
           }
@@ -90,9 +92,9 @@ export async function POST(req: NextRequest) {
         .catch(err => console.error("Post-setup tasks failed:", err)),
     ]);
 
-    return NextResponse.json({ ok: true, userId: user.id, roomId: room.id });
-  } catch (err) {
+    return NextResponse.json({ ok:true, userId:user.id, roomId:room.id });
+  } catch(err) {
     console.error("Setup error:", err);
-    return NextResponse.json({ error: "Database error." }, { status: 500 });
+    return NextResponse.json({ error:"Database error." }, { status:500 });
   }
 }
