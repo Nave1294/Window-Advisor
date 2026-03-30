@@ -1,191 +1,156 @@
 /**
  * Recommendation Engine
  * =====================
- * Given a room's balance point + comfort targets and a day's hourly forecast,
- * decides whether to open windows and identifies the best time windows.
- *
- * Decision factors per hourly slot:
- *   1. Temperature — outdoor temp vs balance point and comfort range
- *   2. Humidity    — outdoor RH vs desired indoor range
- *   3. Dew point   — absolute moisture ceiling (>65°F feels muggy regardless of RH)
- *   4. Precip prob — rain risk threshold
- *   5. Wind        — cross-breeze opportunity boosts effective cooling
- *
- * Each slot gets a score 0–100. Slots above OPEN_THRESHOLD are "open" candidates.
- * Contiguous open slots are merged into time windows with a plain-English reason.
+ * Scores every 3-hour slot across the full forecast (up to 5 days),
+ * finds contiguous open runs regardless of day boundaries, and
+ * returns the complete window duration even if it spans multiple days.
  */
 
-import type { Room } from "./schema";
+import type { Room, OccupancySchedule } from "./schema";
 import type { DayForecast, HourlySlot } from "./weather";
 import { degToCardinal } from "./weather";
+import { occupancyRateForSlot, HEAT_SOURCE_RATE } from "./balance-point";
 
-// ─── Tuneable thresholds ──────────────────────────────────────────────────────
-
-const OPEN_THRESHOLD     = 55;   // minimum slot score to recommend open
-const PRECIP_HARD_CUTOFF = 0.40; // ≥40% precip prob → never open
-const DEW_POINT_CEILING  = 65;   // °F — above this it's uncomfortably humid regardless of RH
-const MIN_OPEN_HOURS     = 1;    // discard windows shorter than this
+// ─── Thresholds ───────────────────────────────────────────────────────────────
+const OPEN_THRESHOLD     = 55;
+const PRECIP_HARD_CUTOFF = 0.40;
+const DEW_POINT_CEILING  = 65;    // °F
+const MIN_OPEN_SLOTS     = 1;     // minimum consecutive open slots to report a window
+const COMFORT_BIAS_CAP   = 5;     // ±°F
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface OpenPeriod {
-  from:   string;  // "7:00 AM"
-  to:     string;  // "11:00 AM"
-  reason: string;
+  from:     string;   // "6:00 AM" or "Mon 6:00 AM" for multi-day
+  to:       string;
+  reason:   string;
+  multiDay: boolean;  // true when the window spans a calendar day boundary
 }
 
 export interface RecommendationResult {
-  shouldOpen:  boolean;
-  openPeriods: OpenPeriod[];
-  reasoning:   string;
-  /** Slot-level scores for debugging / dashboard sparkline */
-  slotScores:  { hour: number; score: number; open: boolean }[];
+  shouldOpen:   boolean;
+  openPeriods:  OpenPeriod[];
+  reasoning:    string;
+  slotScores:   { date: string; hour: number; score: number; open: boolean }[];
+}
+
+// ─── Flat scored slot (across all days) ──────────────────────────────────────
+
+interface ScoredSlot {
+  slot:    HourlySlot;
+  date:    string;      // YYYY-MM-DD
+  score:   number;
+  open:    boolean;
+  blocked: string | null;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+const DOW_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
 function fmt12h(hour: number): string {
-  if (hour === 0)  return "12:00 AM";
-  if (hour === 12) return "12:00 PM";
-  return hour < 12 ? `${hour}:00 AM` : `${hour - 12}:00 PM`;
+  const h = hour % 24;
+  if (h === 0) return "12:00 AM";
+  if (h === 12) return "12:00 PM";
+  return h < 12 ? `${h}:00 AM` : `${h - 12}:00 PM`;
 }
 
-/** Cardinal direction of room's exterior walls as a Set for quick lookup */
-function wallDirections(room: Room & { exteriorWalls: { direction: string }[] }): Set<string> {
+function fmtSlotLabel(date: string, hour: number, todayDate: string, isMultiDay: boolean): string {
+  if (!isMultiDay) return fmt12h(hour);
+  const d   = new Date(date + "T12:00:00Z");
+  const dow = DOW_SHORT[d.getUTCDay()];
+  return `${dow} ${fmt12h(hour)}`;
+}
+
+function wallDirs(room: Room & { exteriorWalls: { direction: string }[] }): Set<string> {
   return new Set(room.exteriorWalls.map(w => w.direction));
 }
 
-/**
- * Returns true if the wind direction is aligned with the room's
- * cross-breeze axis (i.e. wind is coming from a direction the room has a wall on).
- */
 function isCrossBreezeFavourable(windDeg: number, walls: Set<string>): boolean {
-  const incoming = degToCardinal(windDeg); // e.g. "SW"
-  // Check if any wall direction is within the incoming wind arc
-  // Simple approach: the wind cardinal touches any exterior wall
-  for (const dir of ["N","NE","E","SE","S","SW","W","NW"]) {
-    if (incoming === dir || incoming.includes(dir.charAt(0))) {
-      // Check if any exterior wall faces that general quadrant
-      for (const wall of walls) {
-        if (dir.includes(wall)) return true;
-      }
-    }
+  const incoming = degToCardinal(windDeg);
+  for (const wall of walls) {
+    if (incoming.includes(wall)) return true;
   }
   return false;
 }
 
 // ─── Per-slot scoring ─────────────────────────────────────────────────────────
 
-interface ScoreBreakdown {
-  total:       number;
-  tempScore:   number;
-  humidScore:  number;
-  dewScore:    number;
-  precipScore: number;
-  windBonus:   number;
-  blocked:     string | null; // reason this slot is hard-blocked
-}
-
 function scoreSlot(
   slot:      HourlySlot,
   room:      Room & { exteriorWalls: { direction: string }[] },
   balancePt: number,
-): ScoreBreakdown {
-  const walls = wallDirections(room);
+): { score: number; blocked: string | null } {
+  const walls = wallDirs(room);
 
-  // ── Hard blocks ────────────────────────────────────────────────────────────
+  // Hard blocks
   if (slot.precipProb >= PRECIP_HARD_CUTOFF)
-    return { total: 0, tempScore: 0, humidScore: 0, dewScore: 0, precipScore: 0, windBonus: 0,
-             blocked: `${Math.round(slot.precipProb * 100)}% chance of rain` };
-
+    return { score: 0, blocked: `${Math.round(slot.precipProb * 100)}% chance of rain` };
   if (slot.dewPointF > DEW_POINT_CEILING)
-    return { total: 0, tempScore: 0, humidScore: 0, dewScore: 0, precipScore: 0, windBonus: 0,
-             blocked: `dew point ${slot.dewPointF.toFixed(0)}°F — too muggy` };
-
-  // Opening when outdoor temp exceeds the comfort ceiling actively heats the room
+    return { score: 0, blocked: `dew point ${slot.dewPointF.toFixed(0)}°F — too muggy` };
   if (slot.tempF > room.maxTempF)
-    return { total: 0, tempScore: 0, humidScore: 0, dewScore: 0, precipScore: 0, windBonus: 0,
-             blocked: `outdoor temp ${slot.tempF.toFixed(0)}°F exceeds your comfort ceiling of ${room.maxTempF}°F` };
+    return { score: 0, blocked: `outdoor temp ${slot.tempF.toFixed(0)}°F exceeds comfort ceiling` };
 
-  // ── Temperature score (0–40 pts) ───────────────────────────────────────────
-  // Best score when outdoor temp is at or below the balance point.
-  // Degrades linearly as temp rises above balance point.
-  // Hard zero if outdoor temp exceeds maxTempF (opening would heat the room).
+  // Temperature score (0–40)
   let tempScore = 0;
-  if (slot.tempF > room.maxTempF) {
-    tempScore = 0;
-  } else if (slot.tempF <= balancePt) {
-    tempScore = 40; // ideal — outdoor air will cool the room
+  if (slot.tempF <= balancePt) {
+    tempScore = 40;
   } else {
-    // Between balance point and maxTempF: partial credit
     const range = room.maxTempF - balancePt;
-    const above = slot.tempF - balancePt;
-    tempScore = Math.round(40 * (1 - above / range));
+    tempScore   = Math.round(40 * (1 - (slot.tempF - balancePt) / Math.max(range, 1)));
   }
 
-  // ── Humidity score (0–30 pts) ──────────────────────────────────────────────
-  // Full score within desired range; degrades outside it.
+  // Humidity score (0–30)
   let humidScore = 0;
   if (slot.humidity >= room.minHumidity && slot.humidity <= room.maxHumidity) {
     humidScore = 30;
   } else if (slot.humidity < room.minHumidity) {
-    // Too dry — partial, still generally fine to open
     humidScore = Math.round(30 * (slot.humidity / room.minHumidity));
   } else {
-    // Too humid — degrades more steeply
-    const over = slot.humidity - room.maxHumidity;
-    humidScore = Math.max(0, Math.round(30 * (1 - over / 30)));
+    humidScore = Math.max(0, Math.round(30 * (1 - (slot.humidity - room.maxHumidity) / 30)));
   }
 
-  // ── Dew point score (0–20 pts, capped) ────────────────────────────────────
-  // Linear from 20pts at ≤55°F down to 0 at DEW_POINT_CEILING (65°F).
-  // Capped at 20 so low dew points don't inflate the total past max.
+  // Dew point score (0–20, capped)
   const dewScore = Math.min(20, Math.round(
     Math.max(0, 20 * (1 - (slot.dewPointF - 55) / (DEW_POINT_CEILING - 55)))
   ));
 
-  // ── Precipitation penalty (0–10 pts) ──────────────────────────────────────
-  // Soft penalty for low-but-nonzero rain probability (already hard-blocked above 40%)
+  // Precipitation soft penalty (0–10)
   const precipScore = Math.round(10 * (1 - slot.precipProb / PRECIP_HARD_CUTOFF));
 
-  // ── Cross-breeze wind bonus (+10 pts) ─────────────────────────────────────
-  const windBonus = (room.hasCrossBreeze && isCrossBreezeFavourable(slot.windDeg, walls))
-    ? 10 : 0;
+  // Cross-breeze bonus (+10)
+  const windBonus = (room.hasCrossBreeze && isCrossBreezeFavourable(slot.windDeg, walls)) ? 10 : 0;
 
-  const total = Math.min(100, tempScore + humidScore + dewScore + precipScore + windBonus);
-
-  return { total, tempScore, humidScore, dewScore, precipScore, windBonus, blocked: null };
+  return {
+    score:   Math.min(100, tempScore + humidScore + dewScore + precipScore + windBonus),
+    blocked: null,
+  };
 }
 
-// ─── Period reason generator ──────────────────────────────────────────────────
+// ─── Reason builder for a run of slots ───────────────────────────────────────
 
 function buildReason(slots: HourlySlot[], room: Room, balancePt: number): string {
-  const temps   = slots.map(s => s.tempF);
-  const avgTemp = Math.round(temps.reduce((a, b) => a + b, 0) / temps.length);
+  const avgTemp = Math.round(slots.map(s => s.tempF).reduce((a, b) => a + b, 0) / slots.length);
   const avgHum  = Math.round(slots.map(s => s.humidity).reduce((a, b) => a + b, 0) / slots.length);
   const maxPop  = Math.max(...slots.map(s => s.precipProb));
   const hasCB   = room.hasCrossBreeze && slots.some(s => s.windSpeedMph > 5);
 
   const parts: string[] = [];
+  if (avgTemp <= balancePt)
+    parts.push(`avg ${avgTemp}°F — below your balance point of ${balancePt}°F`);
+  else
+    parts.push(`avg ${avgTemp}°F — within your comfort zone`);
 
-  if (avgTemp <= balancePt) {
-    parts.push(`outdoor temp (avg ${avgTemp}°F) is below your balance point of ${balancePt}°F`);
-  } else {
-    parts.push(`outdoor temp (avg ${avgTemp}°F) is within your comfort zone`);
-  }
+  if (avgHum >= room.minHumidity && avgHum <= room.maxHumidity)
+    parts.push(`humidity avg ${avgHum}% — in range`);
+  else if (avgHum < room.minHumidity)
+    parts.push(`humidity low (avg ${avgHum}%)`);
+  else
+    parts.push(`humidity slightly elevated (avg ${avgHum}%)`);
 
-  if (avgHum >= room.minHumidity && avgHum <= room.maxHumidity) {
-    parts.push(`humidity (avg ${avgHum}%) is in your target range`);
-  } else if (avgHum < room.minHumidity) {
-    parts.push(`humidity is low (avg ${avgHum}%) — will feel dry but not uncomfortable`);
-  } else {
-    parts.push(`humidity is slightly elevated (avg ${avgHum}%)`);
-  }
-
-  if (maxPop > 0.1) parts.push(`${Math.round(maxPop * 100)}% rain chance — watch the forecast`);
-  else parts.push("no meaningful rain risk");
-
-  if (hasCB) parts.push("good cross-breeze opportunity");
+  if (maxPop > 0.1) parts.push(`${Math.round(maxPop * 100)}% rain chance`);
+  else              parts.push("no meaningful rain risk");
+  if (hasCB)        parts.push("good cross-breeze");
 
   return parts.join("; ") + ".";
 }
@@ -193,80 +158,153 @@ function buildReason(slots: HourlySlot[], room: Room, balancePt: number): string
 // ─── Main function ────────────────────────────────────────────────────────────
 
 export function generateRecommendation(
-  room:      Room & { exteriorWalls: { direction: string }[] },
-  day:       DayForecast,
+  room: Room & { exteriorWalls: { direction: string }[] },
+  days: DayForecast[],   // full forecast — may be 1–5 days
 ): RecommendationResult {
-  const balancePt = room.balancePoint ?? room.maxTempF - 20; // fallback if not yet calculated
+  const today = days[0]?.date ?? new Date().toISOString().slice(0, 10);
 
-  // Score every slot
-  const scored = day.slots.map(slot => {
-    const breakdown = scoreSlot(slot, room, balancePt);
-    return { slot, breakdown, score: breakdown.total, open: breakdown.total >= OPEN_THRESHOLD };
-  });
+  // Apply comfort bias
+  const bias      = Math.max(-COMFORT_BIAS_CAP, Math.min(COMFORT_BIAS_CAP, room.comfortBias ?? 0));
+  const rawBP     = room.balancePoint ?? room.maxTempF - 20;
+  const balancePt = Math.round((rawBP - bias) * 10) / 10;
 
-  const slotScores = scored.map(s => ({ hour: s.slot.hour, score: s.score, open: s.open }));
+  // Parse occupancy schedule
+  let schedule: OccupancySchedule = {};
+  try { schedule = JSON.parse(room.occupancySchedule || "{}"); } catch { /* empty */ }
+  const heatRate = HEAT_SOURCE_RATE[room.heatSourceLevel] ?? 1.5;
 
-  // Find contiguous open runs
+  // ── Flatten all slots across all days into one scored timeline ──────────────
+  const allScored: ScoredSlot[] = [];
+
+  for (const day of days) {
+    for (const slot of day.slots) {
+      // Slot-level balance point adjustment for occupancy
+      const slotDate  = new Date(slot.ts * 1000);
+      const dow       = slotDate.getUTCDay();
+      const occRate   = occupancyRateForSlot(schedule, dow, slot.hour);
+      // Unoccupied rooms are slightly easier to cool → raise effective BP modestly
+      const slotBP    = balancePt + (occRate < 3.5 ? (3.5 - occRate) * 0.5 : 0);
+
+      const { score, blocked } = scoreSlot(slot, room, slotBP);
+
+      allScored.push({
+        slot,
+        date:    day.date,
+        score,
+        open:    score >= OPEN_THRESHOLD,
+        blocked,
+      });
+    }
+  }
+
+  // Sort by timestamp to ensure chronological order across days
+  allScored.sort((a, b) => a.slot.ts - b.slot.ts);
+
+  // ── Find contiguous open runs across the full timeline ──────────────────────
   const openPeriods: OpenPeriod[] = [];
-  let runStart: number | null = null;
-  let runSlots: HourlySlot[]  = [];
+  let runStart:  ScoredSlot | null = null;
+  let runSlots:  HourlySlot[]      = [];
+  let runDates:  string[]          = [];
 
-  for (let i = 0; i <= scored.length; i++) {
-    const current = scored[i];
-    const isOpen  = current?.open ?? false;
+  const flush = () => {
+    if (!runStart || runSlots.length < MIN_OPEN_SLOTS) { runStart = null; runSlots = []; runDates = []; return; }
 
-    if (isOpen && runStart === null) {
-      runStart = current.slot.hour;
-      runSlots = [current.slot];
-    } else if (isOpen && runStart !== null) {
-      runSlots.push(current.slot);
-    } else if (!isOpen && runStart !== null) {
-      // Run ended — check minimum length
-      if (runSlots.length >= MIN_OPEN_HOURS) {
-        const lastSlot = runSlots[runSlots.length - 1];
-        const endHour = Math.min(lastSlot.hour + 3, 24);
-        openPeriods.push({
-          from:   fmt12h(runStart),
-          to:     endHour === 24 ? "12:00 AM" : fmt12h(endHour),
-          reason: buildReason(runSlots, room, balancePt),
-        });
-      }
-      runStart = null;
-      runSlots = [];
+    const lastScored = allScored.find(s => s.slot === runSlots[runSlots.length - 1])!;
+    const spansDays  = new Set(runDates).size > 1;
+
+    const endHourRaw = lastScored.slot.hour + 3;
+    const endHour    = endHourRaw % 24;
+    const endDate    = endHourRaw >= 24
+      ? (() => { const d = new Date(lastScored.date + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); })()
+      : lastScored.date;
+
+    openPeriods.push({
+      from:     fmtSlotLabel(runStart.date, runStart.slot.hour, today, spansDays),
+      to:       fmtSlotLabel(endDate, endHour === 0 ? 0 : endHour, today, spansDays),
+      reason:   buildReason(runSlots, room, balancePt),
+      multiDay: spansDays,
+    });
+
+    runStart = null; runSlots = []; runDates = [];
+  };
+
+  for (let i = 0; i <= allScored.length; i++) {
+    const cur    = allScored[i];
+    const isOpen = cur?.open ?? false;
+
+    if (isOpen && !runStart) {
+      runStart = cur;
+      runSlots = [cur.slot];
+      runDates = [cur.date];
+    } else if (isOpen && runStart) {
+      runSlots.push(cur.slot);
+      runDates.push(cur.date);
+    } else if (!isOpen && runStart) {
+      flush();
     }
   }
+  flush();
 
-  const shouldOpen = openPeriods.length > 0;
+  // ── Determine today's status — does the first open period start today? ──────
+  const todayScored = allScored.filter(s => s.date === today);
+  const shouldOpen  = openPeriods.some(p => {
+    // Period is relevant today if any of its slots fall on today
+    const runDaySet = new Set(
+      allScored
+        .filter(s => s.open)
+        .filter(s => {
+          // Belongs to the same run as this period
+          const runSlotTs = allScored.filter(s2 => s2.open).map(s2 => s2.slot.ts);
+          return runSlotTs.includes(s.slot.ts);
+        })
+        .map(s => s.date)
+    );
+    return runDaySet.has(today);
+  }) || todayScored.some(s => s.open);
 
-  // ── Overall reasoning ───────────────────────────────────────────────────────
+  // ── Build overall reasoning ─────────────────────────────────────────────────
+  const biasNote = Math.abs(bias) >= 0.5
+    ? ` (balance point adjusted ${bias > 0 ? "down" : "up"} ${Math.abs(bias).toFixed(1)}°F from feedback)`
+    : "";
+
+  const todayHigh = days[0]?.highF;
+  const todayLow  = days[0]?.lowF;
+  const tempLine  = todayHigh != null
+    ? `Today: high ${todayHigh.toFixed(0)}°F / low ${todayLow?.toFixed(0)}°F. `
+    : "";
+
   let reasoning: string;
-
-  if (shouldOpen) {
-    const windowCount = openPeriods.length;
-    const allTemps    = day.slots.map(s => s.tempF);
-    reasoning = `Open during ${windowCount === 1 ? "one window" : `${windowCount} windows`} today. ` +
-      `Outdoor high ${day.highF.toFixed(0)}°F / low ${day.lowF.toFixed(0)}°F — ` +
-      `your balance point is ${balancePt}°F. ` +
-      (day.maxPrecipProb >= PRECIP_HARD_CUTOFF
-        ? `Rain risk is high for part of the day — stick to the recommended windows.`
-        : `Rain risk is low all day.`);
-  } else {
-    // Explain the primary reason windows should stay closed
-    const allBlocked  = scored.filter(s => s.breakdown.blocked);
-    const tooHot      = scored.filter(s => !s.breakdown.blocked && s.slot.tempF > room.maxTempF);
-    const tooHumid    = scored.filter(s => !s.breakdown.blocked && s.slot.humidity > room.maxHumidity + 10);
-
-    if (allBlocked.length >= scored.length * 0.6) {
-      const topReason = allBlocked[0]?.breakdown.blocked ?? "unfavourable conditions";
-      reasoning = `Keep windows closed today. ${topReason.charAt(0).toUpperCase() + topReason.slice(1)} for most of the day.`;
-    } else if (tooHot.length > scored.length * 0.5) {
-      reasoning = `Keep windows closed. Outdoor temps (high ${day.highF.toFixed(0)}°F) exceed your comfort ceiling of ${room.maxTempF}°F for most of the day — opening would bring heat in.`;
-    } else if (tooHumid.length > scored.length * 0.5) {
-      reasoning = `Keep windows closed. Outdoor humidity is above your target range for most of the day and would raise indoor moisture levels.`;
+  if (shouldOpen && openPeriods.length > 0) {
+    const multiDayPeriods = openPeriods.filter(p => p.multiDay);
+    if (multiDayPeriods.length > 0) {
+      reasoning = `${tempLine}Extended open window available — conditions stay favourable across multiple days. ` +
+        `Effective balance point ${balancePt}°F${biasNote}.`;
     } else {
-      reasoning = `Conditions don't favour opening windows today — no sustained period where temperature, humidity, and rain risk are all within range.`;
+      reasoning = `${tempLine}Open during ${openPeriods.length === 1 ? "one period" : `${openPeriods.length} periods`} today. ` +
+        `Effective balance point ${balancePt}°F${biasNote}.`;
+    }
+  } else {
+    const blocked = allScored.filter(s => s.date === today && s.blocked);
+    const tooHot  = todayScored.filter(s => !s.blocked && s.slot.tempF > room.maxTempF);
+    if (blocked.length >= todayScored.length * 0.6 && blocked[0]) {
+      const top = blocked[0].blocked!;
+      reasoning = `Keep windows closed today. ${top.charAt(0).toUpperCase() + top.slice(1)} for most of the day${biasNote}.`;
+    } else if (tooHot.length > todayScored.length * 0.5) {
+      reasoning = `Keep windows closed. Outdoor temps (high ${todayHigh?.toFixed(0)}°F) exceed your comfort ceiling of ${room.maxTempF}°F${biasNote}.`;
+    } else {
+      reasoning = `No sustained open window today — conditions don't stay within range long enough${biasNote}.`;
     }
   }
 
-  return { shouldOpen, openPeriods, reasoning, slotScores };
+  return {
+    shouldOpen,
+    openPeriods,
+    reasoning,
+    slotScores: allScored.map(s => ({
+      date:  s.date,
+      hour:  s.slot.hour,
+      score: s.score,
+      open:  s.open,
+    })),
+  };
 }

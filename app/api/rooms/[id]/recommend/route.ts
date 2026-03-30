@@ -1,12 +1,5 @@
 export const dynamic = "force-dynamic";
 
-/**
- * POST /api/rooms/[id]/recommend
- *
- * Generates (or refreshes) today's recommendation for a room.
- * Fetches live weather, runs the engine, persists the result.
- * Called by the daily cron job and on-demand from the dashboard.
- */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { rooms, windows, exteriorWalls, recommendations } from "@/lib/schema";
@@ -16,9 +9,7 @@ import { generateRecommendation } from "@/lib/recommendation";
 import { users } from "@/lib/schema";
 import type { RoomFull } from "@/lib/schema";
 
-function todayDateStr(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+function todayDateStr() { return new Date().toISOString().slice(0, 10); }
 
 export async function POST(
   _req: NextRequest,
@@ -26,7 +17,6 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  // Load room with relations
   const room = (await db.select().from(rooms).where(eq(rooms.id, id)))[0];
   if (!room) return NextResponse.json({ error: "Room not found." }, { status: 404 });
 
@@ -40,7 +30,6 @@ export async function POST(
 
   const roomFull: RoomFull = { ...room, windows: roomWindows, exteriorWalls: roomWalls };
 
-  // Fetch forecast
   let forecast;
   try {
     forecast = await fetchForecast(user.zipCode);
@@ -51,14 +40,13 @@ export async function POST(
     );
   }
 
+  if (!forecast.days.length)
+    return NextResponse.json({ error: "No forecast data available." }, { status: 502 });
+
+  // Pass the full forecast — engine handles multi-day
+  const result = generateRecommendation(roomFull, forecast.days);
+
   const today = todayDateStr();
-  const dayForecast = forecast.days.find(d => d.date === today) ?? forecast.days[0];
-  if (!dayForecast) return NextResponse.json({ error: "No forecast data available." }, { status: 502 });
-
-  // Run recommendation engine
-  const result = generateRecommendation(roomFull, dayForecast);
-
-  // Persist — upsert on (roomId, date)
   const existing = await db.select()
     .from(recommendations)
     .where(eq(recommendations.roomId, id))
@@ -76,14 +64,10 @@ export async function POST(
   let rec;
   if (todayRec) {
     const [updated] = await db.update(recommendations)
-      .set(recData)
-      .where(eq(recommendations.id, todayRec.id))
-      .returning();
+      .set(recData).where(eq(recommendations.id, todayRec.id)).returning();
     rec = updated;
   } else {
-    const [inserted] = await db.insert(recommendations)
-      .values(recData)
-      .returning();
+    const [inserted] = await db.insert(recommendations).values(recData).returning();
     rec = inserted;
   }
 
@@ -92,10 +76,9 @@ export async function POST(
     recommendation: rec,
     slotScores: result.slotScores,
     forecast: {
-      cityName:  forecast.cityName,
-      date:      today,
-      highF:     dayForecast.highF,
-      lowF:      dayForecast.lowF,
+      cityName: forecast.cityName,
+      date:     today,
+      days:     forecast.days.map(d => ({ date: d.date, highF: d.highF, lowF: d.lowF })),
     },
   });
 }
@@ -104,7 +87,7 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id } = await params;
+  const { id }  = await params;
   const today   = todayDateStr();
 
   const existing = await db.select()

@@ -19,7 +19,7 @@ export function startCron() {
   if (scheduled) return; // idempotent — safe in Next.js hot-reload
   scheduled = true;
 
-  // "0 7 * * *" = 7:00 AM every day
+  // 7:00 AM Eastern — node-cron handles DST automatically via timezone option
   cron.schedule("0 7 * * *", async () => {
     console.log(`[cron] Running daily digest at ${new Date().toISOString()}`);
     try {
@@ -31,7 +31,7 @@ export function startCron() {
     } catch (err) {
       console.error("[cron] Digest failed:", err);
     }
-  });
+  }, { timezone: "America/New_York" });
 
-  console.log("[cron] Daily digest scheduled at 7:00 AM.");
+  console.log("[cron] Daily digest scheduled at 7:00 AM Eastern (DST-aware).");
 }
