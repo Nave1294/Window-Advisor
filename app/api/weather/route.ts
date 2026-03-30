@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 /**
  * GET /api/weather?zip=XXXXX
  *

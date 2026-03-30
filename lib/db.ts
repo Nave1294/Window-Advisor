@@ -2,22 +2,23 @@ import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "./schema";
 
-// ---------------------------------------------------------------------------
-// Singleton DB client — safe for Next.js dev hot-reload
-// ---------------------------------------------------------------------------
+// Lazy singleton — client is only created on first use, never at import time.
+// This prevents Next.js build from trying to connect to the DB during static generation.
+let _db: ReturnType<typeof drizzle> | null = null;
 
-const globalForDb = globalThis as unknown as {
-  _libsqlClient: ReturnType<typeof createClient> | undefined;
-};
-
-const client =
-  globalForDb._libsqlClient ??
-  createClient({
-    url: process.env.DATABASE_URL ?? "file:./dev.db",
-  });
-
-if (process.env.NODE_ENV !== "production") {
-  globalForDb._libsqlClient = client;
+export function getDb() {
+  if (!_db) {
+    const client = createClient({
+      url: process.env.DATABASE_URL ?? "file:./dev.db",
+    });
+    _db = drizzle(client, { schema });
+  }
+  return _db;
 }
 
-export const db = drizzle(client, { schema });
+// Proxy so existing `import { db }` calls still work without changes
+export const db = new Proxy({} as ReturnType<typeof drizzle>, {
+  get(_target, prop) {
+    return (getDb() as unknown as Record<string | symbol, unknown>)[prop];
+  },
+});
