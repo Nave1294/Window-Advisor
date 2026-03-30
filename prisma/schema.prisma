@@ -1,0 +1,83 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Room {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Identity
+  email   String @unique
+  zipCode String
+
+  // Dimensions
+  lengthFt        Float
+  widthFt         Float
+  ceilingHeightFt Float
+
+  // Thermal properties
+  insulationLevel  String // BELOW_CODE | AT_CODE | ABOVE_CODE
+  hasCrossBreeze   Boolean
+
+  // Desired comfort ranges
+  minTempF    Float
+  maxTempF    Float
+  minHumidity Int
+  maxHumidity Int
+
+  // Derived — calculated after setup, updated if config changes
+  balancePoint Float?
+
+  // Relations
+  windows          Window[]
+  exteriorWalls    ExteriorWall[]
+  recommendations  Recommendation[]
+}
+
+model Window {
+  id     String @id @default(cuid())
+  roomId String
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  size      String // SMALL | MEDIUM | LARGE
+  direction String // N | S | E | W
+}
+
+model ExteriorWall {
+  id     String @id @default(cuid())
+  roomId String
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  direction String // N | S | E | W
+}
+
+model Recommendation {
+  id     String @id @default(cuid())
+  roomId String
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  date       DateTime
+  shouldOpen Boolean
+
+  // JSON-encoded array of { from: string, to: string, reason: string }
+  openPeriods String?
+
+  reasoning String
+
+  emailSent   Boolean   @default(false)
+  emailSentAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  // One recommendation per room per day
+  @@unique([roomId, date])
+}
