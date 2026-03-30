@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { users, rooms, windows, exteriorWalls } from "@/lib/schema";
 import { eq } from "drizzle-orm";
-import type { InsulationLevel, Direction, WindowSize, GlazingType, Orientation, OccupancyLevel, HeatSourceLevel, UnoccupiedBlock } from "@/lib/schema";
+import type { InsulationLevel, Direction, WindowSize, GlazingType, Orientation, OccupancyLevel, HeatSourceLevel, UnoccupiedBlock, RoomFull } from "@/lib/schema";
 
 interface SetupPayload {
   email:string; zipCode:string; roomName:string;
@@ -12,8 +12,7 @@ interface SetupPayload {
   lengthFt:number; widthFt:number; ceilingHeightFt:number;
   orientation:Orientation; insulationLevel:InsulationLevel;
   glazingType:GlazingType; hasCrossBreeze:boolean;
-  occupancyLevel:OccupancyLevel;
-  unoccupiedBlocks:UnoccupiedBlock[];
+  occupancyLevel:OccupancyLevel; unoccupiedBlocks:UnoccupiedBlock[];
   heatSourceLevel:HeatSourceLevel;
   windows:{size:WindowSize;direction:Direction;glazingOverride?:GlazingType}[];
   exteriorWalls:Direction[];
@@ -59,26 +58,16 @@ export async function POST(req: NextRequest) {
 
     // Create room
     const [room] = await db.insert(rooms).values({
-      userId:          user.id,
-      name:            roomName.trim(),
-      floorNumber:     floorNumber ?? 1,
-      isTopFloor:      isTopFloor ?? false,
-      lengthFt,
-      widthFt,
-      ceilingHeightFt,
-      orientation:     orientation ?? "NS",
-      insulationLevel,
-      glazingType:     glazingType ?? "DOUBLE",
-      hasCrossBreeze,
-      occupancyLevel:  occupancyLevel ?? "ONE_TWO",
-      unoccupiedBlocks:JSON.stringify(unoccupiedBlocks ?? []),
-      heatSourceLevel: heatSourceLevel ?? "LIGHT_ELECTRONICS",
-      minTempF,
-      maxTempF,
-      minHumidity,
-      maxHumidity,
-      balancePoint: null,
-      comfortBias:  0,
+      userId:user.id, name:roomName.trim(),
+      floorNumber:floorNumber??1, isTopFloor:isTopFloor??false,
+      lengthFt, widthFt, ceilingHeightFt,
+      orientation:orientation??"NS", insulationLevel,
+      glazingType:glazingType??"DOUBLE", hasCrossBreeze,
+      occupancyLevel:occupancyLevel??"ONE_TWO",
+      unoccupiedBlocks:JSON.stringify(unoccupiedBlocks??[]),
+      heatSourceLevel:heatSourceLevel??"LIGHT_ELECTRONICS",
+      minTempF, maxTempF, minHumidity, maxHumidity,
+      balancePoint:null, comfortBias:0,
     }).returning();
 
     // Insert windows and walls
@@ -89,41 +78,37 @@ export async function POST(req: NextRequest) {
       wallList.map(dir => ({ roomId:room.id, direction:dir }))
     );
 
-    const origin = req.nextUrl.origin;
-
-    // Fire-and-forget: balance point calculation
-    fetch(`${origin}/api/rooms/${room.id}/balance-point`, { method:"POST" })
-      .catch(err => console.error("[setup] Balance point failed:", err));
-
-    // Fire-and-forget: confirmation email (independent of balance point)
+    // Fire-and-forget background tasks — call functions directly, no HTTP
     void (async () => {
       try {
+        // 1. Calculate and persist balance point
+        const { calculateBalancePoint } = await import("@/lib/balance-point");
+        const roomWindows = await db.select().from(windows).where(eq(windows.roomId, room.id));
+        const roomWalls   = await db.select().from(exteriorWalls).where(eq(exteriorWalls.roomId, room.id));
+        const roomFull: RoomFull = { ...room, windows: roomWindows, exteriorWalls: roomWalls };
+        const bp = calculateBalancePoint(roomFull);
+        await db.update(rooms).set({ balancePoint: bp.balancePoint }).where(eq(rooms.id, room.id));
+        console.log(`[setup] Balance point calculated: ${bp.balancePoint}°F for room ${room.id}`);
+
+        // 2. Send confirmation email with the now-calculated balance point
         const { sendConfirmationEmail } = await import("@/lib/email");
         let cityName = "";
         try {
           const { resolveZip } = await import("@/lib/weather");
           cityName = (await resolveZip(zipCode)).city;
-        } catch { /* city name is optional */ }
+        } catch { /* optional */ }
 
         const result = await sendConfirmationEmail({
-          to:           email,
-          roomName:     roomName.trim(),
-          floorNumber:  floorNumber ?? 1,
-          balancePoint: null, // calculated async — will show in first daily email
-          minTempF,
-          maxTempF,
-          minHumidity,
-          maxHumidity,
-          cityName,
+          to: email, roomName: roomName.trim(), floorNumber: floorNumber??1,
+          balancePoint: bp.balancePoint,
+          minTempF, maxTempF, minHumidity, maxHumidity, cityName,
         });
 
-        if (result.ok) {
-          console.log(`[setup] Confirmation email sent to ${email}, id=${result.emailId}`);
-        } else {
-          console.error(`[setup] Confirmation email failed for ${email}:`, result.error);
-        }
+        if (result.ok) console.log(`[setup] Confirmation email sent to ${email}, id=${result.emailId}`);
+        else           console.error(`[setup] Confirmation email failed:`, result.error);
+
       } catch (err) {
-        console.error("[setup] Confirmation email threw:", err);
+        console.error("[setup] Background tasks failed:", err);
       }
     })();
 

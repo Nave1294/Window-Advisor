@@ -64,9 +64,22 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (body.exteriorWalls.length)
     await db.insert(exteriorWalls).values(body.exteriorWalls.map(dir=>({ roomId:id, direction:dir })));
 
-  const origin = req.nextUrl.origin;
-  fetch(`${origin}/api/rooms/${id}/balance-point`, { method:"POST" })
-    .catch(err => console.error("Balance point recalculation failed:", err));
+  const origin = req.nextUrl.origin; void origin; // unused now
+
+  // Recalculate balance point directly — no HTTP self-call
+  void (async () => {
+    try {
+      const { calculateBalancePoint } = await import("@/lib/balance-point");
+      const updatedRoom = (await db.select().from(rooms).where(eq(rooms.id, id)))[0];
+      const roomWindows = await db.select().from(windows).where(eq(windows.roomId, id));
+      const roomWalls   = await db.select().from(exteriorWalls).where(eq(exteriorWalls.roomId, id));
+      const bp = calculateBalancePoint({ ...updatedRoom, windows: roomWindows, exteriorWalls: roomWalls });
+      await db.update(rooms).set({ balancePoint: bp.balancePoint }).where(eq(rooms.id, id));
+      console.log(`[edit] Balance point updated: ${bp.balancePoint}°F`);
+    } catch (err) {
+      console.error("[edit] Balance point recalculation failed:", err);
+    }
+  })();
 
   return NextResponse.json({ ok:true, roomId:id });
 }
