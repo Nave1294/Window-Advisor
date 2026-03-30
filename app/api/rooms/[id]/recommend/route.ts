@@ -2,12 +2,11 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { rooms, windows, exteriorWalls, recommendations } from "@/lib/schema";
+import { rooms, windows, exteriorWalls, recommendations, users } from "@/lib/schema";
 import { eq } from "drizzle-orm";
 import { fetchForecast } from "@/lib/weather";
 import { generateRecommendation } from "@/lib/recommendation";
 import { generateAiringRecommendations } from "@/lib/airing";
-import { users } from "@/lib/schema";
 import type { RoomFull } from "@/lib/schema";
 
 function todayDateStr() { return new Date().toISOString().slice(0, 10); }
@@ -17,7 +16,6 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-
   const room = (await db.select().from(rooms).where(eq(rooms.id, id)))[0];
   if (!room) return NextResponse.json({ error: "Room not found." }, { status: 404 });
 
@@ -36,7 +34,6 @@ export async function POST(
   catch (err) {
     return NextResponse.json({ error: `Weather fetch failed: ${err instanceof Error ? err.message : err}` }, { status: 502 });
   }
-
   if (!forecast.days.length)
     return NextResponse.json({ error: "No forecast data available." }, { status: 502 });
 
@@ -44,19 +41,20 @@ export async function POST(
   const rawBP     = room.balancePoint ?? room.maxTempF - 20;
   const balancePt = Math.round((rawBP - bias) * 10) / 10;
 
-  const result  = generateRecommendation(roomFull, forecast.days);
-  const airing  = generateAiringRecommendations(room, forecast.days, balancePt);
+  const result = generateRecommendation(roomFull, forecast.days);
+  const airing = generateAiringRecommendations(room, forecast.days, balancePt);
 
-  const today = todayDateStr();
+  const today   = todayDateStr();
   const existing = await db.select().from(recommendations).where(eq(recommendations.roomId, id)).all();
   const todayRec = existing.find(r => r.date === today);
 
   const recData = {
-    roomId:      id,
-    date:        today,
-    shouldOpen:  result.shouldOpen,
-    openPeriods: JSON.stringify(result.openPeriods),
-    reasoning:   result.reasoning,
+    roomId:        id,
+    date:          today,
+    shouldOpen:    result.shouldOpen,
+    openPeriods:   JSON.stringify(result.openPeriods),
+    airingWindows: JSON.stringify(airing.windows),
+    reasoning:     result.reasoning,
   };
 
   let rec;
@@ -70,9 +68,12 @@ export async function POST(
 
   return NextResponse.json({
     ok: true,
-    recommendation: { ...rec, openPeriods: result.openPeriods },
-    airing,
-    slotScores: result.slotScores,
+    recommendation: {
+      ...rec,
+      openPeriods:   result.openPeriods,
+      airingWindows: airing.windows,
+    },
+    airing: { ...airing, intervalMins: airing.intervalMins, summary: airing.summary, needsAiring: airing.needsAiring },
     forecast: {
       cityName: forecast.cityName,
       date:     today,
@@ -85,12 +86,23 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id }  = await params;
-  const today   = todayDateStr();
+  const { id }   = await params;
+  const today    = todayDateStr();
   const existing = await db.select().from(recommendations).where(eq(recommendations.roomId, id)).all();
   const todayRec = existing.find(r => r.date === today);
   if (!todayRec) return NextResponse.json({ recommendation: null });
+
+  const openPeriods   = todayRec.openPeriods   ? JSON.parse(todayRec.openPeriods)   : [];
+  const airingWindows = todayRec.airingWindows  ? JSON.parse(todayRec.airingWindows) : null;
+
   return NextResponse.json({
-    recommendation: { ...todayRec, openPeriods: todayRec.openPeriods ? JSON.parse(todayRec.openPeriods) : [] },
+    recommendation: { ...todayRec, openPeriods, airingWindows },
+    // Reconstruct minimal airing shape for dashboard
+    airing: airingWindows ? {
+      needsAiring:  true,
+      windows:      airingWindows,
+      intervalMins: 0,
+      summary:      "",
+    } : null,
   });
 }

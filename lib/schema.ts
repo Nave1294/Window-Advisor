@@ -97,15 +97,16 @@ export const feedback = sqliteTable("feedback", {
 export const recommendations = sqliteTable(
   "recommendations",
   {
-    id:          text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-    roomId:      text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
-    date:        text("date").notNull(),
-    shouldOpen:  integer("should_open",  { mode: "boolean" }).notNull(),
-    openPeriods: text("open_periods"),
-    reasoning:   text("reasoning").notNull(),
-    emailSent:   integer("email_sent",   { mode: "boolean" }).notNull().default(false),
-    emailSentAt: text("email_sent_at"),
-    createdAt:   text("created_at").notNull().default(sql`(datetime('now'))`),
+    id:            text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    roomId:        text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+    date:          text("date").notNull(),
+    shouldOpen:    integer("should_open",  { mode: "boolean" }).notNull(),
+    openPeriods:   text("open_periods"),
+    airingWindows: text("airing_windows"),  // JSON: AiringWindow[]
+    reasoning:     text("reasoning").notNull(),
+    emailSent:     integer("email_sent",   { mode: "boolean" }).notNull().default(false),
+    emailSentAt:   text("email_sent_at"),
+    createdAt:     text("created_at").notNull().default(sql`(datetime('now'))`),
   },
   (t) => [unique("room_date_uniq").on(t.roomId, t.date)]
 );

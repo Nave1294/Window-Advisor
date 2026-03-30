@@ -4,28 +4,22 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AppHeader } from "@/app/components/AppHeader";
 import type { OpenPeriod } from "@/lib/recommendation";
-import type { AiringResult } from "@/lib/airing";
+import type { AiringWindow } from "@/lib/airing";
+import { conditionLine, airingLine, wholeHouseLine } from "@/lib/condition-line";
 
 interface WindowChip { size:string; direction:string; }
-interface Room { id:string; name:string; floorNumber:number; balancePoint:number|null; minTempF:number; maxTempF:number; minHumidity:number; maxHumidity:number; insulationLevel:string; windows:WindowChip[]; }
-interface TodayRec { shouldOpen:boolean; openPeriods:OpenPeriod[]; reasoning:string; emailSent:boolean; highF?:number; lowF?:number; cityName?:string; airing?:AiringResult; }
+interface Room { id:string; name:string; floorNumber:number; balancePoint:number|null; minTempF:number; maxTempF:number; minHumidity:number; maxHumidity:number; windows:WindowChip[]; }
+interface AiringInfo { needsAiring:boolean; windows:AiringWindow[]; intervalMins:number; summary:string; }
+interface TodayRec {
+  shouldOpen:boolean; openPeriods:OpenPeriod[]; airingWindows:AiringWindow[]|null;
+  reasoning:string; emailSent:boolean; highF?:number; lowF?:number; cityName?:string;
+  airing?:AiringInfo;
+}
 interface RoomState { room:Room; rec:TodayRec|null; loading:boolean; error:string; summary:string; }
 
 function todayLabel() { return new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"}); }
 function todayDate()  { return new Date().toISOString().slice(0,10); }
-function fmtT(s:string){ return s.replace(":00 "," "); }
-
-function openLine(periods:OpenPeriod[], today:string): string {
-  const t = periods.filter(p=>!p.startDate||p.startDate===today);
-  if (!t.length) { const f=periods[0]; return f?`Opens ${fmtT(f.from)}`:""; }
-  return t.map(p=>`${fmtT(p.from)} – ${fmtT(p.to)}`).join(" and ");
-}
-
-function airingLine(a:AiringResult, today:string): string {
-  const w = a.windows.filter(w=>w.date===today);
-  if (!w.length) return "No suitable slots today";
-  return w.map(w=>fmtT(w.label.split("–")[0].trim())).join(", ");
-}
+function nowHour()    { return new Date().getHours(); }
 
 function DeleteModal({ roomName,onConfirm,onCancel,deleting }:{roomName:string;onConfirm:()=>void;onCancel:()=>void;deleting:boolean}) {
   return (
@@ -46,6 +40,14 @@ function RoomCard({ state,onRefresh,onDelete }:{state:RoomState;onRefresh:()=>vo
   const { room,rec,loading,error,summary } = state;
   const [expanded, setExpanded] = useState(false);
   const today = todayDate();
+  const hour  = nowHour();
+
+  // Resolve airing from either location in the response
+  const airingWindows: AiringWindow[] = rec?.airing?.windows ?? rec?.airingWindows ?? [];
+  const needsAiring   = (rec?.airing?.needsAiring ?? airingWindows.length > 0);
+
+  const condLine  = rec ? conditionLine(rec.shouldOpen, rec.openPeriods, today, hour) : "";
+  const airLine   = needsAiring ? airingLine(airingWindows, today, hour) : "";
 
   return (
     <div className="card-raised" style={{overflow:"hidden"}}>
@@ -53,7 +55,7 @@ function RoomCard({ state,onRefresh,onDelete }:{state:RoomState;onRefresh:()=>vo
       <div style={{padding:"16px 20px 12px",borderBottom:"0.5px solid var(--border)",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
         <div>
           <h2 style={{fontFamily:"'Lora',serif",fontSize:18,fontWeight:600,color:"var(--navy)",marginBottom:2}}>{room.name}</h2>
-          <p style={{fontSize:12,color:"var(--muted)"}}>Floor {room.floorNumber}{room.balancePoint!==null?` · Balance point ${room.balancePoint.toFixed(1)}°F`:""}</p>
+          <p style={{fontSize:12,color:"var(--muted)"}}>Floor {room.floorNumber}{room.balancePoint!==null?` · Balance point ${room.balancePoint?.toFixed(1)}°F`:""}</p>
         </div>
         <div style={{display:"flex",gap:8,flexShrink:0}}>
           <Link href={`/edit/${room.id}`} style={{fontSize:12,fontWeight:500,color:"var(--muted)",textDecoration:"none",padding:"5px 10px",background:"var(--bg-subtle)",borderRadius:8,border:"0.5px solid var(--border-mid)"}}>Edit</Link>
@@ -84,49 +86,42 @@ function RoomCard({ state,onRefresh,onDelete }:{state:RoomState;onRefresh:()=>vo
         {!loading && rec && (
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
 
-            {/* Window status — icon + conversational sentence + times */}
+            {/* ── Temperature status — one clean line ── */}
             <div style={{
-              display:"flex",alignItems:"flex-start",gap:12,
-              padding:"14px 16px",
+              display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",
               borderRadius:"var(--radius-md)",
               background:rec.shouldOpen?"var(--sage-light)":"var(--bg-subtle)",
               border:`1px solid ${rec.shouldOpen?"#A3E4B5":"var(--border-mid)"}`,
             }}>
-              <span style={{fontSize:22,flexShrink:0,marginTop:1}}>{rec.shouldOpen?"🪟":"🔒"}</span>
+              <span style={{fontSize:20,flexShrink:0,marginTop:2}}>{rec.shouldOpen?"🪟":"🔒"}</span>
               <div>
-                {summary ? (
-                  <p style={{fontSize:14,color:"var(--navy)",lineHeight:1.5,marginBottom:rec.shouldOpen&&rec.openPeriods.length?4:0}}>
-                    {summary}
-                  </p>
-                ) : (
-                  <p style={{fontSize:14,fontWeight:600,color:"var(--navy)",marginBottom:rec.shouldOpen&&rec.openPeriods.length?4:0}}>
-                    {rec.shouldOpen?"Open windows today":"Keep windows closed today"}
-                  </p>
-                )}
-                {rec.shouldOpen && rec.openPeriods.length>0 && (
-                  <p style={{fontSize:13,color:"#1A8C3A",fontWeight:500}}>{openLine(rec.openPeriods,today)}</p>
+                <p style={{fontSize:14,color:"var(--navy)",lineHeight:1.5,marginBottom: summary ? 4 : 0}}>
+                  {summary || condLine}
+                </p>
+                {summary && (
+                  <p style={{fontSize:13,color:"#1A8C3A",fontWeight:500}}>{condLine}</p>
                 )}
               </div>
             </div>
 
-            {/* Air quality — always show */}
-            {rec.airing?.needsAiring && (
+            {/* ── Air quality — always show if airing needed ── */}
+            {needsAiring && (
               <div style={{
-                display:"flex",alignItems:"flex-start",gap:12,
-                padding:"12px 16px",
+                display:"flex",alignItems:"flex-start",gap:12,padding:"12px 16px",
                 borderRadius:"var(--radius-md)",
                 background:"var(--bg-subtle)",
                 border:"0.5px solid var(--border-mid)",
               }}>
-                <span style={{fontSize:20,flexShrink:0,marginTop:1}}>🌬</span>
+                <span style={{fontSize:20,flexShrink:0,marginTop:2}}>🌬</span>
                 <div>
-                  <p style={{fontSize:14,color:"var(--navy)",marginBottom:2}}>Air out briefly</p>
-                  <p style={{fontSize:13,color:"var(--muted)",fontWeight:500}}>{airingLine(rec.airing,today)}</p>
+                  <p style={{fontSize:14,color:"var(--navy)",marginBottom:airLine?3:0}}>Air quality</p>
+                  {airLine && <p style={{fontSize:13,color:"var(--muted)",fontWeight:500}}>{airLine}</p>}
+                  {!airLine && <p style={{fontSize:13,color:"var(--muted)"}}>No suitable slots during occupied hours today.</p>}
                 </div>
               </div>
             )}
 
-            {/* Why? toggle */}
+            {/* ── Why? toggle ── */}
             <button
               onClick={()=>setExpanded(e=>!e)}
               style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",background:"none",border:"none",cursor:"pointer",padding:"4px 0",color:"var(--muted)"}}
@@ -137,11 +132,9 @@ function RoomCard({ state,onRefresh,onDelete }:{state:RoomState;onRefresh:()=>vo
               </svg>
             </button>
 
-            {/* Expanded detail */}
             {expanded && (
               <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:8,paddingTop:2}}>
-
-                {/* Forecast strip */}
+                {/* Forecast context */}
                 <div style={{display:"flex",gap:12,flexWrap:"wrap",fontSize:12,color:"var(--muted)",padding:"8px 12px",background:"var(--bg-subtle)",borderRadius:"var(--radius-sm)"}}>
                   {rec.cityName && <span>📍 {rec.cityName}</span>}
                   {rec.highF!=null && <span>High {rec.highF.toFixed(0)}°F · Low {rec.lowF?.toFixed(0)}°F</span>}
@@ -153,12 +146,15 @@ function RoomCard({ state,onRefresh,onDelete }:{state:RoomState;onRefresh:()=>vo
                 <p style={{fontSize:13,color:"var(--muted)",lineHeight:1.6,padding:"8px 12px",background:"var(--bg-subtle)",borderRadius:"var(--radius-sm)"}}>{rec.reasoning}</p>
 
                 {/* Open period detail */}
-                {rec.shouldOpen && rec.openPeriods.length>0 && (
+                {rec.shouldOpen && rec.openPeriods.filter(p=>!p.startDate||p.startDate===today).length>0 && (
                   <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    <p style={{fontSize:11,fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.06em"}}>Open window detail</p>
+                    <p style={{fontSize:11,fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.06em"}}>Condition windows</p>
                     {rec.openPeriods.filter(p=>!p.startDate||p.startDate===today).map((p,i)=>(
                       <div key={i} style={{padding:"10px 12px",borderRadius:"var(--radius-sm)",background:"var(--sky-light)",border:"1px solid var(--sky-mid)"}}>
-                        <p style={{fontSize:13,fontWeight:600,color:"var(--navy)",marginBottom:3}}>{fmtT(p.from)} – {fmtT(p.to)}{p.multiDay&&<span style={{fontSize:11,marginLeft:8,color:"var(--sky)"}}>Multi-day</span>}</p>
+                        <p style={{fontSize:13,fontWeight:600,color:"var(--navy)",marginBottom:3}}>
+                          {p.from.replace(":00 "," ")} – {p.to.replace(":00 "," ")}
+                          {p.multiDay&&<span style={{fontSize:11,marginLeft:8,color:"var(--sky)"}}>Multi-day</span>}
+                        </p>
                         <p style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>{p.reason}</p>
                       </div>
                     ))}
@@ -166,17 +162,19 @@ function RoomCard({ state,onRefresh,onDelete }:{state:RoomState;onRefresh:()=>vo
                 )}
 
                 {/* Airing detail */}
-                {rec.airing?.needsAiring && rec.airing.windows.filter(w=>w.date===today).length>0 && (
+                {needsAiring && airingWindows.filter(w=>w.date===today).length>0 && (
                   <div style={{display:"flex",flexDirection:"column",gap:6}}>
                     <p style={{fontSize:11,fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.06em"}}>Air quality detail</p>
-                    <p style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>{rec.airing.summary}</p>
-                    {rec.airing.windows.filter(w=>w.date===today).map((w,i)=>(
+                    {rec.airing?.summary && <p style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>{rec.airing.summary}</p>}
+                    {airingWindows.filter(w=>w.date===today).map((w,i)=>(
                       <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:"var(--bg-subtle)",borderRadius:"var(--radius-sm)",border:"0.5px solid var(--border)"}}>
                         <div>
                           <p style={{fontSize:13,fontWeight:500,color:"var(--navy)"}}>{w.label}</p>
                           <p style={{fontSize:11,color:"var(--muted)",marginTop:2}}>{w.reason}</p>
                         </div>
-                        <span style={{fontSize:11,padding:"3px 8px",borderRadius:10,background:w.disruption==="low"?"var(--sage-light)":w.disruption==="moderate"?"var(--amber-light)":"var(--error-light)",color:w.disruption==="low"?"#1A8C3A":w.disruption==="moderate"?"#B25C00":"var(--error)",fontWeight:500}}>
+                        <span style={{fontSize:11,padding:"3px 8px",borderRadius:10,fontWeight:500,
+                          background:w.disruption==="low"?"var(--sage-light)":w.disruption==="moderate"?"var(--amber-light)":"var(--error-light)",
+                          color:w.disruption==="low"?"#1A8C3A":w.disruption==="moderate"?"#B25C00":"var(--error)"}}>
                           {w.disruption==="low"?"Low impact":w.disruption==="moderate"?"Moderate":"High impact"}
                         </span>
                       </div>
@@ -204,59 +202,71 @@ export default function DashboardPage() {
   const [pageLoading, setPageLoading] = useState(true);
   const [pageError,   setPageError]   = useState("");
   const [greeting,    setGreeting]    = useState("");
+  const [houseLine,   setHouseLine]   = useState("");
   const [deleteTarget,setDeleteTarget]= useState<Room|null>(null);
   const [deleting,    setDeleting]    = useState(false);
 
   const loadRec = useCallback(async (roomId:string) => {
     setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:true,error:""}:s));
     try {
+      // Try cache first
       const getRes  = await fetch(`/api/rooms/${roomId}/recommend`);
       const getData = await getRes.json();
+
       if (getData.recommendation) {
-        setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec:{
-          shouldOpen:getData.recommendation.shouldOpen,
-          openPeriods:getData.recommendation.openPeriods??[],
-          reasoning:getData.recommendation.reasoning,
-          emailSent:getData.recommendation.emailSent,
-        }}:s));
+        const rec: TodayRec = {
+          ...getData.recommendation,
+          airing: getData.airing,
+        };
+        setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec}:s));
+        // Generate AI summary for cached rec too
+        generateSummary(roomId, rec, prev=>prev.find(s=>s.room.id===roomId)?.room.name??"");
         return;
       }
+
+      // No cache — fetch fresh
       const postRes  = await fetch(`/api/rooms/${roomId}/recommend`,{method:"POST"});
       const postData = await postRes.json();
       if (!postRes.ok) throw new Error(postData.error??"Failed.");
-      const rec:TodayRec = {
-        shouldOpen:postData.recommendation.shouldOpen,
-        openPeriods:postData.recommendation.openPeriods??[],
-        reasoning:postData.recommendation.reasoning,
-        emailSent:postData.recommendation.emailSent,
-        highF:postData.forecast?.days?.[0]?.highF,
-        lowF:postData.forecast?.days?.[0]?.lowF,
-        cityName:postData.forecast?.cityName,
-        airing:postData.airing,
+
+      const rec: TodayRec = {
+        shouldOpen:   postData.recommendation.shouldOpen,
+        openPeriods:  postData.recommendation.openPeriods??[],
+        airingWindows:postData.recommendation.airingWindows??null,
+        reasoning:    postData.recommendation.reasoning,
+        emailSent:    postData.recommendation.emailSent,
+        highF:        postData.forecast?.days?.[0]?.highF,
+        lowF:         postData.forecast?.days?.[0]?.lowF,
+        cityName:     postData.forecast?.cityName,
+        airing:       postData.airing,
       };
       setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec}:s));
-
-      // Generate conversational summary
-      fetch("/api/ai/room-summary",{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          roomName: roomStates.find(s=>s.room.id===roomId)?.room.name ?? "",
-          shouldOpen:rec.shouldOpen,
-          openPeriods:rec.openPeriods,
-          reasoning:rec.reasoning,
-          highF:rec.highF,
-          lowF:rec.lowF,
-          balancePoint: null,
-        }),
-      }).then(r=>r.json()).then(d=>{
-        if(d.text) setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,summary:d.text}:s));
-      }).catch(()=>{});
+      generateSummary(roomId, rec, prev=>prev.find(s=>s.room.id===roomId)?.room.name??"");
 
     } catch(err) {
       setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,error:err instanceof Error?err.message:"Failed."}:s));
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
+
+  function generateSummary(roomId:string, rec:TodayRec, getName: (prev:RoomState[])=>string) {
+    setRoomStates(prev=>{
+      const roomName = prev.find(s=>s.room.id===roomId)?.room.name ?? "";
+      const bp       = prev.find(s=>s.room.id===roomId)?.room.balancePoint ?? null;
+      fetch("/api/ai/room-summary",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          roomName, shouldOpen:rec.shouldOpen, openPeriods:rec.openPeriods,
+          reasoning:rec.reasoning, highF:rec.highF??70, lowF:rec.lowF??55, balancePoint:bp,
+        }),
+      }).then(r=>r.json()).then(d=>{
+        if(d.text) setRoomStates(p=>p.map(s=>s.room.id===roomId?{...s,summary:d.text}:s));
+      }).catch(()=>{});
+      return prev;
+    });
+    void getName;
+  }
 
   useEffect(()=>{
     fetch(`/api/rooms?email=${encodeURIComponent(decoded)}`)
@@ -271,53 +281,58 @@ export default function DashboardPage() {
       .finally(()=>setPageLoading(false));
   },[decoded,loadRec]);
 
-  // Load greeting after rooms are loaded
+  // Whole-house line + greeting once all recs are loaded
   useEffect(()=>{
-    if (pageLoading || roomStates.length===0) return;
+    const loaded = roomStates.filter(s=>s.rec && !s.loading);
+    if (!loaded.length) return;
+
     const today = todayDate();
-    const rooms = roomStates.map(s=>({shouldOpen:s.rec?.shouldOpen??false}));
-    const first = roomStates.find(s=>s.rec?.cityName)?.rec;
-    if (!first) return;
-    fetch("/api/ai/greeting",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({ date:today, cityName:first.cityName??"", highF:first.highF??70, lowF:first.lowF??55, rooms }),
-    }).then(r=>r.json()).then(d=>{ if(d.text) setGreeting(d.text); }).catch(()=>{});
-  },[pageLoading, roomStates.map(s=>s.rec?.cityName).join(",")]);
+    const hour  = nowHour();
+
+    // Deterministic fallback whole-house line
+    const rooms = loaded.map(s=>({
+      name:s.room.name, shouldOpen:s.rec!.shouldOpen,
+      openPeriods:s.rec!.openPeriods, today, nowHour:hour,
+    }));
+    setHouseLine(wholeHouseLine(rooms));
+
+    // AI whole-house line
+    const first = loaded.find(s=>s.rec?.cityName)?.rec;
+    if (first?.cityName) {
+      fetch("/api/ai/house-summary",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          rooms: loaded.map(s=>({name:s.room.name,shouldOpen:s.rec!.shouldOpen})),
+          highF:first.highF??70, lowF:first.lowF??55, cityName:first.cityName,
+        }),
+      }).then(r=>r.json()).then(d=>{ if(d.text) setHouseLine(d.text); }).catch(()=>{});
+
+      // Greeting
+      if (!greeting) {
+        fetch("/api/ai/greeting",{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            date:today, cityName:first.cityName, highF:first.highF??70, lowF:first.lowF??55,
+            rooms:loaded.map(s=>({shouldOpen:s.rec!.shouldOpen})),
+          }),
+        }).then(r=>r.json()).then(d=>{ if(d.text) setGreeting(d.text); }).catch(()=>{});
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[roomStates.map(s=>!!s.rec).join(",")]);
 
   async function confirmDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      const res = await fetch(`/api/rooms/${deleteTarget.id}`,{method:"DELETE"});
-      if (!res.ok) throw new Error("Delete failed.");
+      await fetch(`/api/rooms/${deleteTarget.id}`,{method:"DELETE"});
       setRoomStates(prev=>prev.filter(s=>s.room.id!==deleteTarget.id));
       setDeleteTarget(null);
     } catch { setDeleteTarget(null); }
     finally { setDeleting(false); }
   }
-
-  // Generate summaries once recs are loaded
-  useEffect(()=>{
-    roomStates.forEach(s=>{
-      if (!s.rec || s.summary || s.loading) return;
-      fetch("/api/ai/room-summary",{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          roomName:s.room.name,
-          shouldOpen:s.rec.shouldOpen,
-          openPeriods:s.rec.openPeriods,
-          reasoning:s.rec.reasoning,
-          highF:s.rec.highF??70,
-          lowF:s.rec.lowF??55,
-          balancePoint:s.room.balancePoint,
-        }),
-      }).then(r=>r.json()).then(d=>{
-        if(d.text) setRoomStates(prev=>prev.map(p=>p.room.id===s.room.id?{...p,summary:d.text}:p));
-      }).catch(()=>{});
-    });
-  },[roomStates.map(s=>s.rec?.shouldOpen).join(",")]);
 
   return (
     <div style={{minHeight:"100vh",background:"var(--bg)"}}>
@@ -326,9 +341,9 @@ export default function DashboardPage() {
 
       <main style={{maxWidth:640,margin:"0 auto",padding:"28px 20px 80px"}}>
 
-        {/* Date + greeting */}
-        <div style={{marginBottom:28}}>
-          <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",marginBottom:greeting?10:0}}>
+        {/* Date + whole-house banner */}
+        <div style={{marginBottom:24}}>
+          <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",marginBottom:12}}>
             <div>
               <h1 style={{fontFamily:"'Lora',serif",fontSize:28,fontWeight:600,color:"var(--navy)",letterSpacing:"-0.02em",marginBottom:2}}>Today</h1>
               <p style={{fontSize:13,color:"var(--muted)"}}>{todayLabel()}</p>
@@ -338,10 +353,19 @@ export default function DashboardPage() {
               + Add room
             </Link>
           </div>
-          {greeting && (
-            <p className="fade-up" style={{fontSize:14,color:"var(--muted)",lineHeight:1.65,marginTop:10,paddingTop:10,borderTop:"0.5px solid var(--border)"}}>
-              {greeting}
-            </p>
+
+          {/* Whole-house recommendation */}
+          {houseLine && (
+            <div className="fade-up" style={{
+              padding:"14px 18px",borderRadius:"var(--radius-md)",
+              background:"var(--white)",border:"0.5px solid var(--border-mid)",
+              boxShadow:"var(--shadow-sm)",marginBottom: greeting ? 10 : 0,
+            }}>
+              <p style={{fontSize:15,fontWeight:600,color:"var(--navy)",marginBottom: greeting ? 4 : 0}}>
+                {houseLine}
+              </p>
+              {greeting && <p style={{fontSize:13,color:"var(--muted)",lineHeight:1.6}}>{greeting}</p>}
+            </div>
           )}
         </div>
 
