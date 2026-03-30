@@ -1,7 +1,8 @@
 import type { Room } from "./schema";
 import type { DayForecast, HourlySlot } from "./weather";
 import { degToCardinal } from "./weather";
-import { parseBlocks, occupancyRateForSlot, HEAT_SOURCE_RATE } from "./occupancy";
+import { parseBlocks, HEAT_SOURCE_RATE } from "./occupancy";
+import { balancePointForSlot } from "./balance-point";
 
 const OPEN_THRESHOLD     = 55;
 const PRECIP_HARD_CUTOFF = 0.40;
@@ -92,22 +93,18 @@ export function generateRecommendation(
   days: DayForecast[],
 ): RecommendationResult {
   const today = days[0]?.date ?? new Date().toISOString().slice(0,10);
-  const bias      = Math.max(-COMFORT_BIAS_CAP, Math.min(COMFORT_BIAS_CAP, room.comfortBias ?? 0));
-  const rawBP     = room.balancePoint ?? room.maxTempF - 20;
-  const balancePt = Math.round((rawBP - bias) * 10) / 10;
+  const bias   = Math.max(-COMFORT_BIAS_CAP, Math.min(COMFORT_BIAS_CAP, room.comfortBias ?? 0));
+  const blocks = parseBlocks(room);
+  void HEAT_SOURCE_RATE; // imported for legacy compat
 
-  const blocks   = parseBlocks(room);
-  const heatRate = HEAT_SOURCE_RATE[room.heatSourceLevel] ?? 1.5;
-
-  // Score all slots across all days
+  // Score all slots across all days using per-slot balance point
   const allScored: { slot:HourlySlot; date:string; score:number; open:boolean; blocked:string|null }[] = [];
 
   for (const day of days) {
     for (const slot of day.slots) {
       const dow      = new Date(slot.ts * 1000).getUTCDay();
-      const occRate  = occupancyRateForSlot(room, blocks, dow, slot.hour);
-      // Unoccupied slots have lower heat load → slightly higher effective balance point
-      const slotBP  = balancePt + (occRate === 0 ? 2 : 0);
+      // Per-slot balance point accounts for time-of-day and day-of-week heat load
+      const slotBP  = balancePointForSlot(room as never, dow, slot.hour, bias);
       const { score, blocked } = scoreSlot(slot, room, slotBP);
       allScored.push({ slot, date: day.date, score, open: score >= OPEN_THRESHOLD, blocked });
     }
@@ -133,7 +130,7 @@ export function generateRecommendation(
     openPeriods.push({
       from:      fmtSlotLabel(runStart.date, runStart.slot.hour, spansDays),
       to:        fmtSlotLabel(endDate, endHour===0?0:endHour, spansDays),
-      reason:    buildReason(runSlots, room, balancePt),
+      reason:    buildReason(runSlots, room, room.balancePoint ?? room.maxTempF - 20),
       multiDay:  spansDays,
       startDate: runStart.date,
     });
@@ -150,9 +147,10 @@ export function generateRecommendation(
 
   const todayScored = allScored.filter(s => s.date === today);
   const shouldOpen  = todayScored.some(s => s.open);
+  const storedBP    = room.balancePoint ?? room.maxTempF - 20;
 
   const biasNote = Math.abs(bias) >= 0.5
-    ? ` (balance point adjusted ${bias>0?"down":"up"} ${Math.abs(bias).toFixed(1)}°F from feedback)`
+    ? ` (bias adjusted ${bias>0?"down":"up"} ${Math.abs(bias).toFixed(1)}°F)`
     : "";
   const todayHigh = days[0]?.highF;
   const todayLow  = days[0]?.lowF;
@@ -162,17 +160,17 @@ export function generateRecommendation(
   if (shouldOpen && openPeriods.length > 0) {
     const multi = openPeriods.filter(p=>p.multiDay).length > 0;
     reasoning = multi
-      ? `${tempLine}Extended open window available — conditions stay favourable across multiple days. Effective balance point ${balancePt}°F${biasNote}.`
-      : `${tempLine}Open during ${openPeriods.length===1?"one period":`${openPeriods.length} periods`} today. Effective balance point ${balancePt}°F${biasNote}.`;
+      ? `${tempLine}Good conditions span multiple days. Avg balance point ~${storedBP.toFixed(1)}°F${biasNote}.`
+      : `${tempLine}Good conditions available today. Avg balance point ~${storedBP.toFixed(1)}°F${biasNote}.`;
   } else {
     const blocked = todayScored.filter(s=>s.blocked);
     const tooHot  = todayScored.filter(s=>!s.blocked&&s.slot.tempF>room.maxTempF);
     if (blocked.length >= todayScored.length*0.6 && blocked[0])
-      reasoning = `Keep windows closed today. ${blocked[0].blocked!.charAt(0).toUpperCase()+blocked[0].blocked!.slice(1)} for most of the day${biasNote}.`;
+      reasoning = `Keep closed today. ${blocked[0].blocked!.charAt(0).toUpperCase()+blocked[0].blocked!.slice(1)} for most of the day${biasNote}.`;
     else if (tooHot.length > todayScored.length*0.5)
-      reasoning = `Keep windows closed. Outdoor temps (high ${todayHigh?.toFixed(0)}°F) exceed your comfort ceiling of ${room.maxTempF}°F${biasNote}.`;
+      reasoning = `Keep closed. Outdoor temps (high ${todayHigh?.toFixed(0)}°F) exceed your comfort ceiling of ${room.maxTempF}°F${biasNote}.`;
     else
-      reasoning = `No sustained open window today — conditions don't stay within range long enough${biasNote}.`;
+      reasoning = `No good conditions today — outdoor conditions don't stay within range long enough${biasNote}.`;
   }
 
   return {

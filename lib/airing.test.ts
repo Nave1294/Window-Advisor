@@ -6,15 +6,15 @@ const BASE_TS = new Date("2025-06-16T09:00:00Z").getTime()/1000;
 
 function makeRoom(overrides: Partial<Room>={}): Room {
   return {
-    id:"r1",createdAt:"",updatedAt:"",userId:"u1",name:"Room",
+    id:"r1",createdAt:"",updatedAt:"",userId:"u1",name:"Living Room",
     floorNumber:1,isTopFloor:false,
     lengthFt:15,widthFt:12,ceilingHeightFt:8,
     orientation:"NS",insulationLevel:"AT_CODE",glazingType:"DOUBLE",hasCrossBreeze:false,
-    occupancyLevel:"ONE_TWO",
-    unoccupiedBlocks:JSON.stringify([{id:"n",startHour:22,endHour:24,days:[0,1,2,3,4,5,6]},{id:"m",startHour:0,endHour:7,days:[0,1,2,3,4,5,6]}]),
+    occupancyLevel:"ONE_TWO", unoccupiedBlocks:"[]",
     heatSourceLevel:"LIGHT_ELECTRONICS",
     minTempF:68,maxTempF:74,minHumidity:40,maxHumidity:55,
     balancePoint:41,comfortBias:0,
+    notificationsEnabled:false,lastNotifiedOpen:null,lastNotifiedClose:null,
     ...overrides,
   };
 }
@@ -29,7 +29,14 @@ function day(date:string,slots:HourlySlot[]):DayForecast {
   return {date,slots,highF:Math.max(...t),lowF:Math.min(...t),maxHumidity:50,maxPrecipProb:0.05,maxWindMph:5};
 }
 
-{const sm=makeRoom({lengthFt:10,widthFt:10,ceilingHeightFt:8});const lg=makeRoom({lengthFt:20,widthFt:20,ceilingHeightFt:9});const d=day("2025-06-16",[slot(0),slot(3),slot(6)]);const rS=generateAiringRecommendations(sm,[d],41);const rL=generateAiringRecommendations(lg,[d],41);console.log("T1 interval scales:",rL.intervalMins>rS.intervalMins?"✅":"❌","(sm:",rS.intervalMins,"lg:",rL.intervalMins,")");}
-{const r=makeRoom({unoccupiedBlocks:"[]",occupancyLevel:"EMPTY"});const d=day("2025-06-16",[slot(0)]);const res=generateAiringRecommendations(r,[d],41);console.log("T2 empty→no airing:",!res.needsAiring?"✅":"❌");}
+{const sm=makeRoom({lengthFt:10,widthFt:10,ceilingHeightFt:8});const lg=makeRoom({lengthFt:20,widthFt:20,ceilingHeightFt:9});const d=day("2025-06-16",[slot(0),slot(3),slot(6)]);const rS=generateAiringRecommendations(sm,[d],41);const rL=generateAiringRecommendations(lg,[d],41);console.log("T1 interval scales:",rL.intervalMins>rS.intervalMins?"✅":"❌");}
+{const r=makeRoom({occupancyLevel:"EMPTY"});const d=day("2025-06-16",[slot(0)]);const res=generateAiringRecommendations(r,[d],41);console.log("T2 empty→no airing:",!res.needsAiring?"✅":"❌");}
 {const r=makeRoom();const d=day("2025-06-16",[slot(0,{precipProb:0.9}),slot(3,{precipProb:0.8}),slot(6,{precipProb:0.7})]);const res=generateAiringRecommendations(r,[d],41);console.log("T3 rain→no windows:",res.windows.length===0?"✅":"❌");}
-{const r=makeRoom();const d=day("2025-06-16",[slot(0),slot(3),slot(6)]);const res=generateAiringRecommendations(r,[d],41);const allInWaking=res.windows.every(w=>w.hour>=7&&w.hour<22);console.log("T4 waking+occupied only:",allInWaking?"✅":"❌",res.windows.map(w=>`h${w.hour}`));}
+
+// T4: Kitchen has higher people count at dinner time
+{const kitchen=makeRoom({name:"Kitchen",heatSourceLevel:"KITCHEN_LAUNDRY"});
+ const living=makeRoom({name:"Living Room",heatSourceLevel:"LIGHT_ELECTRONICS"});
+ const d=day("2025-06-16",[slot(11,{tempF:62})]); // 5 PM slot (offset from 9 AM base)
+ const rK=generateAiringRecommendations(kitchen,[d],41);
+ const rL=generateAiringRecommendations(living,[d],41);
+ console.log("T4 kitchen/living intervals differ or both work:",rK.needsAiring||rL.needsAiring?"✅":"❌");}

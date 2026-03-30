@@ -78,6 +78,9 @@ const ALTERS = [
   "ALTER TABLE rooms ADD COLUMN occupancy_level TEXT NOT NULL DEFAULT 'ONE_TWO'",
   "ALTER TABLE rooms ADD COLUMN unoccupied_blocks TEXT NOT NULL DEFAULT '[]'",
   "ALTER TABLE rooms ADD COLUMN comfort_bias REAL NOT NULL DEFAULT 0",
+  "ALTER TABLE rooms ADD COLUMN notifications_enabled INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE rooms ADD COLUMN last_notified_open TEXT",
+  "ALTER TABLE rooms ADD COLUMN last_notified_close TEXT",
   "ALTER TABLE recommendations ADD COLUMN airing_windows TEXT",
 ];
 

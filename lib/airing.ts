@@ -1,6 +1,7 @@
 import type { Room } from "./schema";
 import type { DayForecast, HourlySlot } from "./weather";
-import { parseBlocks, isUnoccupied, PEOPLE_COUNT } from "./occupancy";
+import { parseBlocks, isUnoccupied } from "./occupancy";
+import { inferRoomType, peopleCountForSlot } from "./room-profile";
 
 const CO2_EXHALED_L_PER_MIN   = 0.24;
 const FT3_TO_LITERS           = 28.317;
@@ -61,7 +62,7 @@ function disruptionLabel(score: number): "low" | "moderate" | "high" {
 function slotReason(slot: HourlySlot, score: number, balancePt: number): string {
   const parts: string[] = [];
   if (score < 8)               parts.push(`outdoor temp (${slot.tempF.toFixed(0)}°F) is close to your balance point`);
-  else if (slot.tempF < balancePt) parts.push(`outdoor air is cool (${slot.tempF.toFixed(0)}°F) — brief open won't overheat the room`);
+  else if (slot.tempF < balancePt) parts.push(`outdoor air is cool (${slot.tempF.toFixed(0)}°F) — brief open won't disrupt the room`);
   else                         parts.push(`least disruptive available slot (${slot.tempF.toFixed(0)}°F outside)`);
   if (slot.precipProb < 0.1)   parts.push("no rain risk");
   if (slot.windSpeedMph > 5)   parts.push("light breeze speeds air exchange");
@@ -73,65 +74,55 @@ export function generateAiringRecommendations(
   days:      DayForecast[],
   balancePt: number,
 ): AiringResult {
-  const blocks  = parseBlocks(room);
-  const people  = PEOPLE_COUNT[room.occupancyLevel as keyof typeof PEOPLE_COUNT] ?? 1.5;
-
-  if (people === 0) {
-    return { intervalMins: MAX_AIRING_INTERVAL_MIN, windows: [], summary: "No airing reminders — room is always empty.", needsAiring: false };
-  }
-
-  // CO2 interval based on room volume and headcount
-  const volumeL     = room.lengthFt * room.widthFt * room.ceilingHeightFt * FT3_TO_LITERS;
-  const riseRateMin = (people * CO2_EXHALED_L_PER_MIN / volumeL) * 1_000_000;
-  const rawInterval = CO2_PPM_TARGET_RISE / riseRateMin;
-  const intervalMins = Math.min(MAX_AIRING_INTERVAL_MIN, Math.max(MIN_AIRING_INTERVAL_MIN, Math.round(rawInterval / 5) * 5));
+  const blocks   = parseBlocks(room);
+  const roomType = inferRoomType(room.name, room.heatSourceLevel as import("./schema").HeatSourceLevel);
+  const volumeL  = room.lengthFt * room.widthFt * room.ceilingHeightFt * FT3_TO_LITERS;
 
   const windows: AiringWindow[] = [];
 
   for (const day of days) {
-    const candidates: { slot: HourlySlot; score: number }[] = [];
+    const candidates: { slot: HourlySlot; score: number; intervalMins: number }[] = [];
 
     for (const slot of day.slots) {
-      // Must be waking hours
       if (slot.hour < WAKING_HOUR_START || slot.hour >= WAKING_HOUR_END) continue;
-
-      // Must be occupied (not in any unoccupied block)
-      const dow = new Date(slot.ts * 1000).getUTCDay();
+      const slotDate = new Date(slot.ts * 1000);
+      const dow      = slotDate.getUTCDay();
       if (isUnoccupied(blocks, dow, slot.hour)) continue;
 
+      // Context-aware people count for this slot
+      const people = peopleCountForSlot(room, roomType, blocks, dow, slot.hour);
+      if (people === 0) continue;
+
+      // CO2 interval for this slot
+      const riseRate    = (people * CO2_EXHALED_L_PER_MIN / volumeL) * 1_000_000;
+      const rawInterval = CO2_PPM_TARGET_RISE / riseRate;
+      const slotInterval = Math.min(MAX_AIRING_INTERVAL_MIN, Math.max(MIN_AIRING_INTERVAL_MIN, Math.round(rawInterval / 5) * 5));
+
       const score = disruptionScore(slot, room, balancePt);
-      if (score < 999) candidates.push({ slot, score });
+      if (score < 999) candidates.push({ slot, score, intervalMins: slotInterval });
     }
 
     if (!candidates.length) continue;
     candidates.sort((a, b) => a.score - b.score);
 
-    // How many slots fit in today's occupied waking time?
-    // Approximate occupied waking hours today from the forecast slots
-    const occupiedWakingSlots = day.slots.filter(slot => {
-      if (slot.hour < WAKING_HOUR_START || slot.hour >= WAKING_HOUR_END) return false;
-      const dow = new Date(slot.ts * 1000).getUTCDay();
-      return !isUnoccupied(blocks, dow, slot.hour);
-    }).length;
-    const occupiedWakingMins = occupiedWakingSlots * 180; // 3h slots
-    const suggestCount       = Math.max(1, Math.min(4, Math.floor(occupiedWakingMins / intervalMins)));
+    // Use the median interval for this day to determine how many slots to show
+    const medianInterval = candidates[Math.floor(candidates.length / 2)].intervalMins;
+    const occupiedWakingSlots = candidates.length;
+    const occupiedWakingMins  = occupiedWakingSlots * 180;
+    const suggestCount        = Math.max(1, Math.min(4, Math.floor(occupiedWakingMins / medianInterval)));
 
-    // Pick spread-out slots
     const picked: typeof candidates = [];
-    const minGapH = Math.max(1, Math.floor(intervalMins / 60));
-
+    const minGapH = Math.max(1, Math.floor(medianInterval / 60));
     for (const c of candidates) {
       if (picked.length >= suggestCount) break;
-      const tooClose = picked.some(p => Math.abs(p.slot.hour - c.slot.hour) < minGapH);
-      if (!tooClose) picked.push(c);
+      if (!picked.some(p => Math.abs(p.slot.hour - c.slot.hour) < minGapH)) picked.push(c);
     }
-    // Backfill if needed
     for (const c of candidates) {
       if (picked.length >= Math.min(suggestCount, 2)) break;
       if (!picked.includes(c)) picked.push(c);
     }
 
-    for (const { slot, score } of picked) {
+    for (const { slot, score, intervalMins } of picked) {
       windows.push({
         date:         day.date,
         hour:         slot.hour,
@@ -143,10 +134,21 @@ export function generateAiringRecommendations(
     }
   }
 
+  // Summary uses the most common interval
+  const allIntervals = windows.map(w => w.intervalMins);
+  const medInterval  = allIntervals.length
+    ? allIntervals.sort((a,b)=>a-b)[Math.floor(allIntervals.length/2)]
+    : MAX_AIRING_INTERVAL_MIN;
+
   const levelLabel = room.occupancyLevel === "THREE_FOUR" ? "3–4 people" : "1–2 people";
   const vol        = Math.round(room.lengthFt * room.widthFt * room.ceilingHeightFt).toLocaleString();
-  const intLabel   = intervalMins < 60 ? `every ${intervalMins} min` : intervalMins === 60 ? "every hour" : `every ${(intervalMins/60).toFixed(1).replace(".0","")} hr`;
-  const summary    = `With ${levelLabel} in a ${vol} ft³ room, CO₂ reaches concerning levels ${intLabel}. ${AIRING_DURATION_MIN}-min ventilation windows are suggested during occupied hours.`;
+  const intLabel   = medInterval < 60 ? `every ${medInterval} min` : medInterval === 60 ? "every hour" : `every ${(medInterval/60).toFixed(1).replace(".0","")} hr`;
+  const summary    = `With ${levelLabel} in a ${vol} ft³ room, CO₂ reaches concerning levels ${intLabel}. ${AIRING_DURATION_MIN}-min ventilation is suggested during occupied hours.`;
 
-  return { intervalMins, windows, summary, needsAiring: true };
+  return {
+    intervalMins: medInterval,
+    windows,
+    summary,
+    needsAiring: windows.length > 0,
+  };
 }

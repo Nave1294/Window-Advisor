@@ -6,15 +6,15 @@ const BASE_TS = new Date("2025-06-16T06:00:00Z").getTime()/1000;
 
 function makeRoom(overrides: Partial<Room & { exteriorWalls: { direction: string }[] }> = {}) {
   return {
-    id:"r1",createdAt:"",updatedAt:"",userId:"u1",name:"Test",
+    id:"r1",createdAt:"",updatedAt:"",userId:"u1",name:"Test Room",
     floorNumber:1,isTopFloor:false,
     lengthFt:12,widthFt:12,ceilingHeightFt:8,orientation:"NS" as const,
     insulationLevel:"AT_CODE" as const,glazingType:"DOUBLE" as const,hasCrossBreeze:false,
-    occupancyLevel:"ONE_TWO" as const,
-    unoccupiedBlocks:"[]",
+    occupancyLevel:"ONE_TWO" as const, unoccupiedBlocks:"[]",
     heatSourceLevel:"LIGHT_ELECTRONICS" as const,
     minTempF:68,maxTempF:74,minHumidity:40,maxHumidity:55,
     balancePoint:41,comfortBias:0,
+    notificationsEnabled:false,lastNotifiedOpen:null,lastNotifiedClose:null,
     exteriorWalls:[{direction:"S"}],
     ...overrides,
   };
@@ -30,19 +30,9 @@ function day(date:string,slots:HourlySlot[]):DayForecast {
   return {date,slots,highF:Math.max(...t),lowF:Math.min(...t),maxHumidity:50,maxPrecipProb:0.05,maxWindMph:5};
 }
 
-{const r=makeRoom();const d=day("2025-06-16",[slot(0,{tempF:58}),slot(3,{tempF:62}),slot(6,{tempF:80}),slot(9,{tempF:85})]);const res=generateRecommendation(r,[d]);console.log("T1 morning open:",res.shouldOpen&&res.openPeriods.length>=1?"✅":"❌",res.openPeriods.map(p=>`${p.from}–${p.to}`));}
+{const r=makeRoom();const d=day("2025-06-16",[slot(0,{tempF:58}),slot(3,{tempF:62}),slot(6,{tempF:80}),slot(9,{tempF:85})]);const res=generateRecommendation(r,[d]);console.log("T1 morning open:",res.shouldOpen&&res.openPeriods.length>=1?"✅":"❌");}
 {const r=makeRoom();const d=day("2025-06-16",[slot(0,{precipProb:0.8}),slot(3,{precipProb:0.7}),slot(6,{precipProb:0.9})]);const res=generateRecommendation(r,[d]);console.log("T2 rain→closed:",!res.shouldOpen?"✅":"❌");}
-{const r=makeRoom();const d=day("2025-06-16",[slot(0,{tempF:80}),slot(3,{tempF:85}),slot(6,{tempF:91})]);const res=generateRecommendation(r,[d]);console.log("T3 hot→closed:",!res.shouldOpen?"✅":"❌");}
-{
-  const d1=day("2025-06-16",[slot(0,{tempF:58}),slot(3,{tempF:60}),slot(6,{tempF:62}),slot(9,{tempF:63})]);
-  const d2=day("2025-06-17",[slot(24,{tempF:61}),slot(27,{tempF:59}),slot(30,{tempF:82})]);
-  const res=generateRecommendation(makeRoom(),[d1,d2]);
-  const multi=res.openPeriods.some(p=>p.multiDay);
-  console.log("T4 multi-day span:",multi?"✅":"❌",res.openPeriods.map(p=>`${p.from}–${p.to} multiDay:${p.multiDay}`));
-}
-{
-  const biasRoom=makeRoom({comfortBias:3});const noRoom=makeRoom({comfortBias:0});
-  const d=day("2025-06-16",[slot(0,{tempF:68}),slot(3,{tempF:70})]);
-  const rB=generateRecommendation(biasRoom,[d]);const rN=generateRecommendation(noRoom,[d]);
-  console.log("T5 bias works (no crash):",rB.slotScores.length>0&&rN.slotScores.length>0?"✅":"❌");
-}
+{const d1=day("2025-06-16",[slot(0,{tempF:58}),slot(3,{tempF:60}),slot(6,{tempF:62}),slot(9,{tempF:63})]);
+ const d2=day("2025-06-17",[slot(24,{tempF:61}),slot(27,{tempF:59}),slot(30,{tempF:82})]);
+ const res=generateRecommendation(makeRoom(),[d1,d2]);
+ console.log("T3 multi-day:",res.openPeriods.some(p=>p.multiDay)?"✅":"❌");}

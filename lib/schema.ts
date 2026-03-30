@@ -64,8 +64,11 @@ export const rooms = sqliteTable("rooms", {
   minHumidity: integer("min_humidity").notNull(),
   maxHumidity: integer("max_humidity").notNull(),
 
-  balancePoint: real("balance_point"),
-  comfortBias:  real("comfort_bias").notNull().default(0),
+  balancePoint:          real("balance_point"),
+  comfortBias:           real("comfort_bias").notNull().default(0),
+  notificationsEnabled:  integer("notifications_enabled", { mode: "boolean" }).notNull().default(false),
+  lastNotifiedOpen:      text("last_notified_open"),   // ISO timestamp of last "open" notification
+  lastNotifiedClose:     text("last_notified_close"),  // ISO timestamp of last "close" notification
 });
 
 // ── windows ───────────────────────────────────────────────────────────────────
