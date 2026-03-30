@@ -1,9 +1,10 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { UnoccupiedBlock } from "@/lib/schema";
 import { OccupancyTimeline } from "@/app/components/OccupancyTimeline";
 import { UnoccupiedBlocksBuilder } from "@/app/components/UnoccupiedBlocksBuilder";
+import { SetupGuide } from "@/app/components/SetupGuide";
 
 type Direction   = "N" | "S" | "E" | "W";
 type WindowSize  = "SMALL" | "MEDIUM" | "LARGE";
@@ -87,12 +88,27 @@ function CompassGrid({ selected, onToggle }:{ selected:Direction[]; onToggle:(d:
   );
 }
 
-export default function SetupPage() {
+export default function SetupPageInner() {
   const router       = useRouter();
   const searchParams = useSearchParams();
   const [step, setStep]       = useState(0);
   const [error, setError]     = useState("");
   const [loading, setLoading] = useState(false);
+  const [guideTrigger, setGuideTrigger] = useState<"advance"|"update"|"idle">("advance");
+  const idleTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
+
+  const resetIdle = useCallback(() => {
+    if (idleTimer.current) clearTimeout(idleTimer.current);
+    setGuideTrigger("update");
+    idleTimer.current = setTimeout(() => setGuideTrigger("idle"), 8000);
+  }, []);
+
+  useEffect(() => {
+    if (idleTimer.current) clearTimeout(idleTimer.current);
+    setGuideTrigger("advance");
+    idleTimer.current = setTimeout(() => setGuideTrigger("idle"), 8000);
+    return () => { if (idleTimer.current) clearTimeout(idleTimer.current); };
+  }, [step]);
 
   const [form, setForm] = useState<FormData>({
     email: searchParams.get("email") ?? "",
@@ -111,7 +127,7 @@ export default function SetupPage() {
     ({size:"",direction:"",glazingOverride:"useRoom"});
 
   function set<K extends keyof FormData>(key:K, value:FormData[K]) {
-    setForm(prev=>({...prev,[key]:value})); setError("");
+    setForm(prev=>({...prev,[key]:value})); setError(""); resetIdle();
   }
 
   function validate(): string {
@@ -413,6 +429,12 @@ export default function SetupPage() {
             <h2 className="font-display text-3xl font-semibold" style={{color:"var(--navy)"}}>{STEPS[step]}</h2>
           </div>
           {renderStep()}
+          <SetupGuide
+            step={step}
+            stepName={STEPS[step]}
+            formData={form as unknown as Record<string, unknown>}
+            trigger={guideTrigger}
+          />
           {error&&<div className="mt-5 px-4 py-3 rounded-xl text-sm" style={{background:"var(--error-light)",color:"var(--error)"}}>{error}</div>}
           <div className="mt-8 flex items-center justify-between">
             <button type="button" className="btn-secondary" onClick={back} disabled={step===0}>← Back</button>
