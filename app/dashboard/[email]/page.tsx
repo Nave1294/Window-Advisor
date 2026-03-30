@@ -117,21 +117,36 @@ function RoomCard({ state, onRefresh, onDelete }: { state:RoomState; onRefresh:(
             <p className="text-sm leading-relaxed" style={{color:"var(--navy)",opacity:0.8}}>{rec.reasoning}</p>
           </div>
 
-          {/* Open periods */}
-          {rec.shouldOpen && rec.openPeriods.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-wider" style={{color:"var(--muted)"}}>Best times to open</p>
-              {rec.openPeriods.map((p,i) => (
-                <div key={i} className="rounded-lg p-3" style={{background:"var(--sky-light)",border:"1px solid var(--sky)"}}>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="font-semibold text-sm" style={{color:"var(--navy)"}}>{p.from} – {p.to}</p>
-                    {p.multiDay && <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{background:"var(--sky-light)",color:"var(--sky)",border:"1px solid var(--sky)"}}>Multi-day</span>}
+          {/* Open periods — today only, future periods summarised */}
+          {rec.shouldOpen && rec.openPeriods.length > 0 && (() => {
+            const todayPeriods   = rec.openPeriods.filter(p => p.startDate === today || !p.startDate);
+            const futurePeriods  = rec.openPeriods.filter(p => p.startDate && p.startDate > today);
+            const activePeriod   = rec.openPeriods.find(p => p.multiDay && p.startDate && p.startDate < today);
+            const showPeriods    = activePeriod ? [activePeriod, ...todayPeriods] : todayPeriods;
+            return (
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wider" style={{color:"var(--muted)"}}>
+                  {showPeriods.length > 0 ? "Best times to open today" : "Open window active"}
+                </p>
+                {showPeriods.map((p,i) => (
+                  <div key={i} className="rounded-lg p-3" style={{background:"var(--sky-light)",border:"1px solid var(--sky)"}}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-semibold text-sm" style={{color:"var(--navy)"}}>{p.from} – {p.to}</p>
+                      {p.multiDay && <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{background:"var(--sky)",color:"white"}}>Multi-day</span>}
+                    </div>
+                    <p className="text-xs mt-1 leading-relaxed" style={{color:"var(--muted)"}}>{p.reason}</p>
                   </div>
-                  <p className="text-xs mt-1 leading-relaxed" style={{color:"var(--muted)"}}>{p.reason}</p>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+                {futurePeriods.length > 0 && (
+                  <p className="text-xs px-3 py-2 rounded-lg" style={{background:"var(--cream-dark)",color:"var(--muted)"}}>
+                    + conditions also favourable {futurePeriods.length === 1
+                      ? `${futurePeriods[0].from} – ${futurePeriods[0].to}`
+                      : `across ${futurePeriods.length} more window${futurePeriods.length > 1 ? "s" : ""} this week`}
+                  </p>
+                )}
+              </div>
+            );
+          })()}
 
           {/* CO2 airing section */}
           {rec.airing?.needsAiring && (() => {

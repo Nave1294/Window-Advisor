@@ -9,7 +9,7 @@ const DEW_POINT_CEILING  = 65;
 const MIN_OPEN_SLOTS     = 1;
 const COMFORT_BIAS_CAP   = 5;
 
-export interface OpenPeriod { from: string; to: string; reason: string; multiDay: boolean; }
+export interface OpenPeriod { from: string; to: string; reason: string; multiDay: boolean; startDate: string; }
 
 export interface RecommendationResult {
   shouldOpen:  boolean;
@@ -131,10 +131,11 @@ export function generateRecommendation(
       ? (() => { const d=new Date(last.date+"T12:00:00Z"); d.setUTCDate(d.getUTCDate()+1); return d.toISOString().slice(0,10); })()
       : last.date;
     openPeriods.push({
-      from:     fmtSlotLabel(runStart.date, runStart.slot.hour, spansDays),
-      to:       fmtSlotLabel(endDate, endHour===0?0:endHour, spansDays),
-      reason:   buildReason(runSlots, room, balancePt),
-      multiDay: spansDays,
+      from:      fmtSlotLabel(runStart.date, runStart.slot.hour, spansDays),
+      to:        fmtSlotLabel(endDate, endHour===0?0:endHour, spansDays),
+      reason:    buildReason(runSlots, room, balancePt),
+      multiDay:  spansDays,
+      startDate: runStart.date,
     });
     runStart=null; runSlots=[]; runDates=[];
   };
