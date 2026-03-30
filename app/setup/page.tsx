@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { OccupancySchedule, OccupancyLevel } from "@/lib/schema";
+import { OccupancyTimeline } from "@/app/components/OccupancyTimeline";
 
 type Direction   = "N" | "S" | "E" | "W";
 type WindowSize  = "SMALL" | "MEDIUM" | "LARGE";
@@ -388,6 +389,11 @@ export default function SetupPage() {
           {Object.values(form.occupancySchedule).every(p=>!p.occupied)&&(
             <div className="mt-4 p-3 rounded-xl text-xs" style={{background:"var(--amber-light)",color:"var(--amber)"}}>
               No days are marked occupied — we'll use a minimal heat load. That's fine for storage rooms or rarely-used spaces.
+            </div>
+          )}
+          {Object.values(form.occupancySchedule).some(p=>p.occupied)&&(
+            <div className="mt-5 p-4 rounded-xl" style={{background:"var(--white)",border:"1px solid var(--border)"}}>
+              <OccupancyTimeline schedule={form.occupancySchedule}/>
             </div>
           )}
         </div>

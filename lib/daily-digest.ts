@@ -3,6 +3,7 @@ import { users, rooms, windows, exteriorWalls, recommendations } from "./schema"
 import { eq } from "drizzle-orm";
 import { fetchForecast } from "./weather";
 import { generateRecommendation } from "./recommendation";
+import { generateAiringRecommendations } from "./airing";
 import { sendDailyEmail, type RoomDigest } from "./email";
 import type { RoomFull } from "./schema";
 
@@ -24,15 +25,10 @@ export async function runDailyDigest(): Promise<DigestResult> {
       const userRooms = await db.select().from(rooms).where(eq(rooms.userId, user.id));
       if (!userRooms.length) continue;
 
-      // Fetch forecast once per user — returns up to 5 days
       let forecast;
       try { forecast = await fetchForecast(user.zipCode); }
       catch (err) { errors.push({ userId: user.id, email: user.email, error: `Weather: ${err}` }); continue; }
-
-      if (!forecast.days.length) {
-        errors.push({ userId: user.id, email: user.email, error: "No forecast data." });
-        continue;
-      }
+      if (!forecast.days.length) { errors.push({ userId: user.id, email: user.email, error: "No forecast." }); continue; }
 
       const digests: RoomDigest[] = [];
       const recIds:  string[]     = [];
@@ -44,15 +40,17 @@ export async function runDailyDigest(): Promise<DigestResult> {
         ]);
         const roomFull: RoomFull = { ...room, windows: roomWindows, exteriorWalls: roomWalls };
 
-        // Pass the full forecast — engine handles multi-day internally
-        const result = generateRecommendation(roomFull, forecast.days);
+        const bias      = Math.max(-5, Math.min(5, room.comfortBias ?? 0));
+        const rawBP     = room.balancePoint ?? room.maxTempF - 20;
+        const balancePt = Math.round((rawBP - bias) * 10) / 10;
 
-        const existingRecs = await db.select().from(recommendations)
-          .where(eq(recommendations.roomId, room.id)).all();
-        const todayRec = existingRecs.find(r => r.date === today);
-        const recData  = {
-          roomId:      room.id,
-          date:        today,
+        const result = generateRecommendation(roomFull, forecast.days);
+        const airing = generateAiringRecommendations(room, forecast.days, balancePt);
+
+        const existingRecs = await db.select().from(recommendations).where(eq(recommendations.roomId, room.id)).all();
+        const todayRec     = existingRecs.find(r => r.date === today);
+        const recData      = {
+          roomId:      room.id, date: today,
           shouldOpen:  result.shouldOpen,
           openPeriods: JSON.stringify(result.openPeriods),
           reasoning:   result.reasoning,
@@ -60,8 +58,7 @@ export async function runDailyDigest(): Promise<DigestResult> {
 
         let recId: string;
         if (todayRec) {
-          await db.update(recommendations).set(recData)
-            .where(eq(recommendations.id, todayRec.id));
+          await db.update(recommendations).set(recData).where(eq(recommendations.id, todayRec.id));
           recId = todayRec.id;
         } else {
           const [ins] = await db.insert(recommendations).values(recData).returning();
@@ -81,6 +78,7 @@ export async function runDailyDigest(): Promise<DigestResult> {
           highF:        forecast.days[0].highF,
           lowF:         forecast.days[0].lowF,
           cityName:     forecast.cityName,
+          airing,
         });
         roomsProcessed++;
       }
@@ -88,9 +86,7 @@ export async function runDailyDigest(): Promise<DigestResult> {
       const sendResult = await sendDailyEmail({ to: user.email, date: today, rooms: digests });
       if (sendResult.ok) {
         for (const recId of recIds)
-          await db.update(recommendations)
-            .set({ emailSent: true, emailSentAt: new Date().toISOString() })
-            .where(eq(recommendations.id, recId));
+          await db.update(recommendations).set({ emailSent: true, emailSentAt: new Date().toISOString() }).where(eq(recommendations.id, recId));
         emailsSent++;
       } else {
         errors.push({ userId: user.id, email: user.email, error: sendResult.error ?? "Send failed." });

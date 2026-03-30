@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
 import type { OccupancySchedule, OccupancyLevel } from "@/lib/schema";
+import { OccupancyTimeline } from "@/app/components/OccupancyTimeline";
 
 type Direction   = "N" | "S" | "E" | "W";
 type WindowSize  = "SMALL" | "MEDIUM" | "LARGE";
@@ -363,6 +364,11 @@ export default function EditRoomPage() {
         <div className="fade-up">
           <p className="text-sm mb-5 leading-relaxed" style={{color:"var(--muted)"}}>Toggle each day the room is occupied and set the hours. Unoccupied hours use a lower heat load.</p>
           <OccupancyScheduleBuilder schedule={form.occupancySchedule} onChange={s=>set("occupancySchedule",s)}/>
+          {Object.values(form.occupancySchedule).some(p=>p.occupied)&&(
+            <div className="mt-5 p-4 rounded-xl" style={{background:"var(--white)",border:"1px solid var(--border)"}}>
+              <OccupancyTimeline schedule={form.occupancySchedule}/>
+            </div>
+          )}
         </div>
       );
       case 6: return (

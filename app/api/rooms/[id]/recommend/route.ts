@@ -6,6 +6,7 @@ import { rooms, windows, exteriorWalls, recommendations } from "@/lib/schema";
 import { eq } from "drizzle-orm";
 import { fetchForecast } from "@/lib/weather";
 import { generateRecommendation } from "@/lib/recommendation";
+import { generateAiringRecommendations } from "@/lib/airing";
 import { users } from "@/lib/schema";
 import type { RoomFull } from "@/lib/schema";
 
@@ -31,26 +32,23 @@ export async function POST(
   const roomFull: RoomFull = { ...room, windows: roomWindows, exteriorWalls: roomWalls };
 
   let forecast;
-  try {
-    forecast = await fetchForecast(user.zipCode);
-  } catch (err) {
-    return NextResponse.json(
-      { error: `Weather fetch failed: ${err instanceof Error ? err.message : err}` },
-      { status: 502 }
-    );
+  try { forecast = await fetchForecast(user.zipCode); }
+  catch (err) {
+    return NextResponse.json({ error: `Weather fetch failed: ${err instanceof Error ? err.message : err}` }, { status: 502 });
   }
 
   if (!forecast.days.length)
     return NextResponse.json({ error: "No forecast data available." }, { status: 502 });
 
-  // Pass the full forecast — engine handles multi-day
-  const result = generateRecommendation(roomFull, forecast.days);
+  const bias      = Math.max(-5, Math.min(5, room.comfortBias ?? 0));
+  const rawBP     = room.balancePoint ?? room.maxTempF - 20;
+  const balancePt = Math.round((rawBP - bias) * 10) / 10;
+
+  const result  = generateRecommendation(roomFull, forecast.days);
+  const airing  = generateAiringRecommendations(room, forecast.days, balancePt);
 
   const today = todayDateStr();
-  const existing = await db.select()
-    .from(recommendations)
-    .where(eq(recommendations.roomId, id))
-    .all();
+  const existing = await db.select().from(recommendations).where(eq(recommendations.roomId, id)).all();
   const todayRec = existing.find(r => r.date === today);
 
   const recData = {
@@ -63,8 +61,7 @@ export async function POST(
 
   let rec;
   if (todayRec) {
-    const [updated] = await db.update(recommendations)
-      .set(recData).where(eq(recommendations.id, todayRec.id)).returning();
+    const [updated] = await db.update(recommendations).set(recData).where(eq(recommendations.id, todayRec.id)).returning();
     rec = updated;
   } else {
     const [inserted] = await db.insert(recommendations).values(recData).returning();
@@ -73,7 +70,8 @@ export async function POST(
 
   return NextResponse.json({
     ok: true,
-    recommendation: rec,
+    recommendation: { ...rec, openPeriods: result.openPeriods },
+    airing,
     slotScores: result.slotScores,
     forecast: {
       cityName: forecast.cityName,
@@ -89,19 +87,10 @@ export async function GET(
 ) {
   const { id }  = await params;
   const today   = todayDateStr();
-
-  const existing = await db.select()
-    .from(recommendations)
-    .where(eq(recommendations.roomId, id))
-    .all();
-
+  const existing = await db.select().from(recommendations).where(eq(recommendations.roomId, id)).all();
   const todayRec = existing.find(r => r.date === today);
   if (!todayRec) return NextResponse.json({ recommendation: null });
-
   return NextResponse.json({
-    recommendation: {
-      ...todayRec,
-      openPeriods: todayRec.openPeriods ? JSON.parse(todayRec.openPeriods) : [],
-    },
+    recommendation: { ...todayRec, openPeriods: todayRec.openPeriods ? JSON.parse(todayRec.openPeriods) : [] },
   });
 }
