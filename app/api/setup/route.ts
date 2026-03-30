@@ -25,11 +25,14 @@ export async function POST(req: NextRequest) {
   try { body = await req.json(); }
   catch { return NextResponse.json({ error:"Invalid JSON." }, { status:400 }); }
 
-  const { email, zipCode, roomName, floorNumber, isTopFloor, lengthFt, widthFt, ceilingHeightFt,
-          orientation, insulationLevel, glazingType, hasCrossBreeze,
-          occupancyLevel, unoccupiedBlocks, heatSourceLevel,
-          windows: windowList, exteriorWalls: wallList,
-          minTempF, maxTempF, minHumidity, maxHumidity } = body;
+  const {
+    email, zipCode, roomName, floorNumber, isTopFloor,
+    lengthFt, widthFt, ceilingHeightFt,
+    orientation, insulationLevel, glazingType, hasCrossBreeze,
+    occupancyLevel, unoccupiedBlocks, heatSourceLevel,
+    windows: windowList, exteriorWalls: wallList,
+    minTempF, maxTempF, minHumidity, maxHumidity,
+  } = body;
 
   if (!email?.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/))
     return NextResponse.json({ error:"Invalid email." }, { status:422 });
@@ -45,6 +48,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error:"Invalid comfort range." }, { status:422 });
 
   try {
+    // Upsert user
     let user = (await db.select().from(users).where(eq(users.email, email)))[0];
     if (user) {
       await db.update(users).set({ zipCode }).where(eq(users.id, user.id));
@@ -53,48 +57,80 @@ export async function POST(req: NextRequest) {
       user = created;
     }
 
+    // Create room
     const [room] = await db.insert(rooms).values({
-      userId:user.id, name:roomName.trim(),
-      floorNumber:floorNumber??1, isTopFloor:isTopFloor??false,
-      lengthFt, widthFt, ceilingHeightFt,
-      orientation:orientation??"NS", insulationLevel,
-      glazingType:glazingType??"DOUBLE", hasCrossBreeze,
-      occupancyLevel:occupancyLevel??"ONE_TWO",
-      unoccupiedBlocks:JSON.stringify(unoccupiedBlocks??[]),
-      heatSourceLevel:heatSourceLevel??"LIGHT_ELECTRONICS",
-      minTempF, maxTempF, minHumidity, maxHumidity,
-      balancePoint:null, comfortBias:0,
+      userId:          user.id,
+      name:            roomName.trim(),
+      floorNumber:     floorNumber ?? 1,
+      isTopFloor:      isTopFloor ?? false,
+      lengthFt,
+      widthFt,
+      ceilingHeightFt,
+      orientation:     orientation ?? "NS",
+      insulationLevel,
+      glazingType:     glazingType ?? "DOUBLE",
+      hasCrossBreeze,
+      occupancyLevel:  occupancyLevel ?? "ONE_TWO",
+      unoccupiedBlocks:JSON.stringify(unoccupiedBlocks ?? []),
+      heatSourceLevel: heatSourceLevel ?? "LIGHT_ELECTRONICS",
+      minTempF,
+      maxTempF,
+      minHumidity,
+      maxHumidity,
+      balancePoint: null,
+      comfortBias:  0,
     }).returning();
 
+    // Insert windows and walls
     await db.insert(windows).values(
-      windowList.map(w=>({ roomId:room.id, size:w.size, direction:w.direction, glazingOverride:w.glazingOverride??null }))
+      windowList.map(w => ({ roomId:room.id, size:w.size, direction:w.direction, glazingOverride:w.glazingOverride??null }))
     );
     await db.insert(exteriorWalls).values(
-      wallList.map(dir=>({ roomId:room.id, direction:dir }))
+      wallList.map(dir => ({ roomId:room.id, direction:dir }))
     );
 
     const origin = req.nextUrl.origin;
-    Promise.all([
-      fetch(`${origin}/api/rooms/${room.id}/balance-point`, { method:"POST" })
-        .then(async r => {
-          if (r.ok) {
-            const bpData = await r.json();
-            const { sendConfirmationEmail } = await import("@/lib/email");
-            let cityName = "";
-            try { const { resolveZip } = await import("@/lib/weather"); const geo = await resolveZip(zipCode); cityName = geo.city; } catch { /* ok */ }
-            await sendConfirmationEmail({
-              to:email, roomName:roomName.trim(), floorNumber:floorNumber??1,
-              balancePoint:bpData.balancePoint??null,
-              minTempF, maxTempF, minHumidity, maxHumidity, cityName,
-            });
-          }
-        })
-        .catch(err => console.error("Post-setup tasks failed:", err)),
-    ]);
+
+    // Fire-and-forget: balance point calculation
+    fetch(`${origin}/api/rooms/${room.id}/balance-point`, { method:"POST" })
+      .catch(err => console.error("[setup] Balance point failed:", err));
+
+    // Fire-and-forget: confirmation email (independent of balance point)
+    void (async () => {
+      try {
+        const { sendConfirmationEmail } = await import("@/lib/email");
+        let cityName = "";
+        try {
+          const { resolveZip } = await import("@/lib/weather");
+          cityName = (await resolveZip(zipCode)).city;
+        } catch { /* city name is optional */ }
+
+        const result = await sendConfirmationEmail({
+          to:           email,
+          roomName:     roomName.trim(),
+          floorNumber:  floorNumber ?? 1,
+          balancePoint: null, // calculated async — will show in first daily email
+          minTempF,
+          maxTempF,
+          minHumidity,
+          maxHumidity,
+          cityName,
+        });
+
+        if (result.ok) {
+          console.log(`[setup] Confirmation email sent to ${email}, id=${result.emailId}`);
+        } else {
+          console.error(`[setup] Confirmation email failed for ${email}:`, result.error);
+        }
+      } catch (err) {
+        console.error("[setup] Confirmation email threw:", err);
+      }
+    })();
 
     return NextResponse.json({ ok:true, userId:user.id, roomId:room.id });
-  } catch(err) {
-    console.error("Setup error:", err);
+
+  } catch (err) {
+    console.error("[setup] Database error:", err);
     return NextResponse.json({ error:"Database error." }, { status:500 });
   }
 }
