@@ -44,11 +44,12 @@ export function calculateBalancePoint(room: RoomFull): BalancePointResult {
   const blocks     = parseBlocks(room);
   const baseRate   = HEAT_SOURCE_RATE[heatSourceLevel] ?? 1.5;
   const roomType   = inferRoomType(room.name, heatSourceLevel as import("./schema").HeatSourceLevel);
-  const floorPenalty = (floorNumber - 1) * 1.5 + (isTopFloor ? 1.5 : 0);
+  const floorPenalty = (floorNumber - 1) * 0.3 + (isTopFloor ? 0.8 : 0);
 
   // Compute weighted average heat rate across all 168 weekly hour-slots
   // Includes both equipment heat (from heat source level) and people heat (from occupancy)
-  const BASE_PEOPLE_RATE: Record<string, number> = { EMPTY: 0, ONE_TWO: 3.5, THREE_FOUR: 5.5 };
+  // People rates based on ASHRAE ~250 BTU/hr sensible per sedentary occupant
+  const BASE_PEOPLE_RATE: Record<string, number> = { EMPTY: 0, ONE_TWO: 2.0, THREE_FOUR: 3.5 };
   const basePeopleRate = BASE_PEOPLE_RATE[room.occupancyLevel] ?? 3.5;
 
   let totalRate = 0, totalSlots = 0;
@@ -118,13 +119,13 @@ export function balancePointForSlot(
   const blocks       = parseBlocks(room);
   const baseRate     = HEAT_SOURCE_RATE[room.heatSourceLevel] ?? 1.5;
   const roomType     = inferRoomType(room.name, room.heatSourceLevel as import("./schema").HeatSourceLevel);
-  const floorPenalty = (floorNumber - 1) * 1.5 + (isTopFloor ? 1.5 : 0);
+  const floorPenalty = (floorNumber - 1) * 0.3 + (isTopFloor ? 0.8 : 0);
 
   // Equipment + people heat for this specific slot
   const equipRate  = slotHeatRate(room, roomType, blocks, dayOfWeek, hour, baseRate);
   const people     = peopleCountForSlot(room, roomType, blocks, dayOfWeek, hour);
   const basePeople = room.occupancyLevel === "THREE_FOUR" ? 3.5 : 1.5;
-  const BASE_PEOPLE_RATE: Record<string, number> = { EMPTY:0, ONE_TWO:3.5, THREE_FOUR:5.5 };
+  const BASE_PEOPLE_RATE: Record<string, number> = { EMPTY:0, ONE_TWO:2.0, THREE_FOUR:3.5 };
   const basePRate  = BASE_PEOPLE_RATE[room.occupancyLevel] ?? 3.5;
   const peopleRate = basePeople > 0 ? (people / basePeople) * basePRate : 0;
   const qInternal  = (equipRate + peopleRate + floorPenalty) * floorArea;

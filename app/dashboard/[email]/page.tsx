@@ -22,9 +22,15 @@ interface TodayRec {
 }
 interface RoomState { room:Room; rec:TodayRec|null; loading:boolean; error:string; summary:string; notifEnabled:boolean; }
 
-function todayLabel() { return new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"}); }
-function todayDate()  { return new Date().toISOString().slice(0,10); }
-function nowHour()    { return new Date().getHours(); }
+function todayLabel() {
+  return new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",timeZone:"America/New_York"});
+}
+function todayDate() {
+  return new Date().toLocaleDateString("en-CA",{timeZone:"America/New_York"}); // YYYY-MM-DD in Eastern
+}
+function nowHour() {
+  return parseInt(new Date().toLocaleString("en-US",{hour:"numeric",hour12:false,timeZone:"America/New_York"}));
+}
 
 function Toggle({ on, onChange, label }: { on:boolean; onChange:(v:boolean)=>void; label:string }) {
   return (
