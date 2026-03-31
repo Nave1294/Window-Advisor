@@ -44,6 +44,19 @@ export async function POST(
   const result = generateRecommendation(roomFull, forecast.days);
   const airing = generateAiringRecommendations(room, forecast.days, balancePt);
 
+  // Calculate today's BP range from all forecast slots
+  const { balancePointForSlot } = await import("@/lib/balance-point");
+  const todaySlots = forecast.days[0]?.slots ?? [];
+  const todayBPs   = todaySlots.map(slot => {
+    const dow = new Date(slot.ts * 1000).getUTCDay();
+    return balancePointForSlot(roomFull, dow, slot.hour, bias);
+  }).filter(bp => bp > 0);
+  const bpMin = todayBPs.length ? Math.min(...todayBPs) : balancePt;
+  const bpMax = todayBPs.length ? Math.max(...todayBPs) : balancePt;
+  const bpRange = Math.abs(bpMax - bpMin) < 1
+    ? { min: balancePt, max: balancePt, label: `${balancePt.toFixed(1)}°F` }
+    : { min: Math.round(bpMin * 10)/10, max: Math.round(bpMax * 10)/10, label: `${Math.round(bpMin)}–${Math.round(bpMax)}°F today` };
+
   const today   = todayDateStr();
   const existing = await db.select().from(recommendations).where(eq(recommendations.roomId, id)).all();
   const todayRec = existing.find(r => r.date === today);
@@ -74,6 +87,7 @@ export async function POST(
       airingWindows: airing.windows,
     },
     airing: { ...airing, intervalMins: airing.intervalMins, summary: airing.summary, needsAiring: airing.needsAiring },
+    bpRange,
     forecast: {
       cityName: forecast.cityName,
       date:     today,

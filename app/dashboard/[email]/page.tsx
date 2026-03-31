@@ -18,6 +18,7 @@ interface TodayRec {
   shouldOpen:boolean; openPeriods:OpenPeriod[]; airingWindows:AiringWindow[]|null;
   reasoning:string; emailSent:boolean; highF?:number; lowF?:number; cityName?:string;
   airing?:AiringInfo;
+  bpRange?: { min:number; max:number; label:string };
 }
 interface RoomState { room:Room; rec:TodayRec|null; loading:boolean; error:string; summary:string; notifEnabled:boolean; }
 
@@ -88,7 +89,14 @@ function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
       <div style={{padding:"16px 20px 12px",borderBottom:"0.5px solid var(--border)",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
         <div>
           <h2 style={{fontFamily:"'Lora',serif",fontSize:18,fontWeight:600,color:"var(--navy)",marginBottom:2}}>{room.name}</h2>
-          <p style={{fontSize:12,color:"var(--muted)"}}>Floor {room.floorNumber}{room.balancePoint!==null?` · Balance point ${room.balancePoint?.toFixed(1)}°F`:""}</p>
+          <p style={{fontSize:12,color:"var(--muted)"}}>
+            Floor {room.floorNumber}
+            {rec?.bpRange
+              ? ` · Balance point ${rec.bpRange.label}`
+              : room.balancePoint!==null
+                ? ` · Balance point ${room.balancePoint?.toFixed(1)}°F`
+                : ""}
+          </p>
         </div>
         <div style={{display:"flex",gap:8,flexShrink:0}}>
           <Link href={`/edit/${room.id}`} style={{fontSize:12,fontWeight:500,color:"var(--muted)",textDecoration:"none",padding:"5px 10px",background:"var(--bg-subtle)",borderRadius:8,border:"0.5px solid var(--border-mid)"}}>Edit</Link>
@@ -278,6 +286,7 @@ export default function DashboardPage() {
         lowF:          postData.forecast?.days?.[0]?.lowF,
         cityName:      postData.forecast?.cityName,
         airing:        postData.airing,
+        bpRange:       postData.bpRange,
       };
       setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec}:s));
       triggerSummary(roomId);
@@ -291,11 +300,16 @@ export default function DashboardPage() {
     setRoomStates(prev => {
       const s = prev.find(x=>x.room.id===roomId);
       if (!s?.rec) return prev;
+      const today = todayDate();
+      // Only pass today's periods — prevents AI from narrating future days
+      const todayPeriods = s.rec.openPeriods.filter(p => !p.startDate || p.startDate === today);
       fetch("/api/ai/room-summary",{
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          roomName:s.room.name, shouldOpen:s.rec.shouldOpen, openPeriods:s.rec.openPeriods,
-          reasoning:s.rec.reasoning, highF:s.rec.highF??70, lowF:s.rec.lowF??55, balancePoint:s.room.balancePoint,
+          roomName:s.room.name, shouldOpen:s.rec.shouldOpen, openPeriods:todayPeriods,
+          reasoning:s.rec.reasoning, highF:s.rec.highF??70, lowF:s.rec.lowF??55,
+          balancePoint:s.room.balancePoint,
+          bpRange:s.rec.bpRange ?? null,
         }),
       }).then(r=>r.json()).then(d=>{
         if(d.text) setRoomStates(p=>p.map(x=>x.room.id===roomId?{...x,summary:d.text}:x));
@@ -348,7 +362,13 @@ export default function DashboardPage() {
     if (!greeting) {
       fetch("/api/ai/greeting",{
         method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ date:today, cityName:first.cityName, highF:first.highF??70, lowF:first.lowF??55, rooms:loaded.map(s=>({shouldOpen:s.rec!.shouldOpen})) }),
+        body:JSON.stringify({
+          date:today, cityName:first.cityName, highF:first.highF??70, lowF:first.lowF??55,
+          rooms:loaded.map(s=>({
+            shouldOpen:s.rec!.shouldOpen,
+            bpRange: s.rec?.bpRange ?? null,
+          })),
+        }),
       }).then(r=>r.json()).then(d=>{ if(d.text) setGreeting(d.text); }).catch(()=>{});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps

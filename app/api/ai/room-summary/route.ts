@@ -2,15 +2,27 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
-  const { roomName, shouldOpen, openPeriods, reasoning, highF, lowF, balancePoint } = await req.json();
+  const { roomName, shouldOpen, openPeriods, reasoning, highF, lowF, bpRange } = await req.json();
 
-  const prompt = `One short friendly sentence (max 20 words) summarising a window recommendation. Natural, specific, no jargon.
+  const bpNote = bpRange?.label
+    ? `Balance point today: ${bpRange.label} (shifts with room activity). Only use this exact value if mentioning balance points.`
+    : "Do not mention balance point temperatures.";
 
-Room: ${roomName} | ${shouldOpen?"Open":"Closed"} | High ${highF}°F Low ${lowF}°F${balancePoint?` BP ${balancePoint.toFixed(1)}°F`:""}
-${openPeriods?.length ? `Times: ${(openPeriods as {from:string;to:string}[]).map(p=>`${p.from}–${p.to}`).join(", ")}` : ""}
+  const prompt = `Write ONE short, friendly sentence (max 20 words) summarising a window recommendation. Natural, specific, no jargon.
+
+Room: ${roomName} | ${shouldOpen?"Open":"Closed"} | High ${highF}°F Low ${lowF}°F
+${openPeriods?.length ? `Good times today: ${(openPeriods as {from:string;to:string}[]).map(p=>`${p.from}–${p.to}`).join(", ")}` : ""}
 Reason: ${reasoning}
+${bpNote}
 
-Good examples: "Good window this morning — cool and dry from 7–10 AM." / "Keep them closed — warmer and more humid outside than in." / "No luck today — rain and humidity all day."
+RULES: Never invent temperatures or numbers not given above.
+
+Good examples:
+- "Good conditions tonight from 5 PM — cool and dry for a few hours."
+- "Keep them closed today — warmer and more humid outside than in."
+- "Brief opening around 9 AM before the afternoon heat arrives."
+- "No luck today — rain and humidity all day."
+
 Write only the sentence.`;
 
   try {
