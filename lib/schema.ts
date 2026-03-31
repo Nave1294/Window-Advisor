@@ -106,6 +106,8 @@ export const recommendations = sqliteTable(
     shouldOpen:    integer("should_open",  { mode: "boolean" }).notNull(),
     openPeriods:   text("open_periods"),
     airingWindows: text("airing_windows"),  // JSON: AiringWindow[]
+    bpRange:       text("bp_range"),        // JSON: { min, max, label }
+    forecastMeta:  text("forecast_meta"),   // JSON: { cityName, highF, lowF }
     reasoning:     text("reasoning").notNull(),
     emailSent:     integer("email_sent",   { mode: "boolean" }).notNull().default(false),
     emailSentAt:   text("email_sent_at"),

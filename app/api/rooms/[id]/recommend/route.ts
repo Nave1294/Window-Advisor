@@ -67,7 +67,14 @@ export async function POST(
     shouldOpen:    result.shouldOpen,
     openPeriods:   JSON.stringify(result.openPeriods),
     airingWindows: JSON.stringify(airing.windows),
+    bpRange:       JSON.stringify(bpRange),
     reasoning:     result.reasoning,
+    // Store forecast context so GET cache can return it
+    forecastMeta:  JSON.stringify({
+      cityName: forecast.cityName,
+      highF:    forecast.days[0]?.highF ?? null,
+      lowF:     forecast.days[0]?.lowF  ?? null,
+    }),
   };
 
   let rec;
@@ -108,15 +115,16 @@ export async function GET(
 
   const openPeriods   = todayRec.openPeriods   ? JSON.parse(todayRec.openPeriods)   : [];
   const airingWindows = todayRec.airingWindows  ? JSON.parse(todayRec.airingWindows) : null;
+  const bpRange       = todayRec.bpRange        ? JSON.parse(todayRec.bpRange)       : null;
+  const forecastMeta  = todayRec.forecastMeta   ? JSON.parse(todayRec.forecastMeta)  : null;
 
   return NextResponse.json({
     recommendation: { ...todayRec, openPeriods, airingWindows },
-    // Reconstruct minimal airing shape for dashboard
-    airing: airingWindows ? {
-      needsAiring:  true,
-      windows:      airingWindows,
-      intervalMins: 0,
-      summary:      "",
+    airing: airingWindows ? { needsAiring:true, windows:airingWindows, intervalMins:0, summary:"" } : null,
+    bpRange,
+    forecast: forecastMeta ? {
+      cityName: forecastMeta.cityName,
+      days: [{ date: today, highF: forecastMeta.highF, lowF: forecastMeta.lowF }],
     } : null,
   });
 }

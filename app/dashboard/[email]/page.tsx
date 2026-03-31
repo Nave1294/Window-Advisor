@@ -273,7 +273,14 @@ export default function DashboardPage() {
       const getData = await getRes.json();
 
       if (getData.recommendation) {
-        const rec: TodayRec = { ...getData.recommendation, airing: getData.airing };
+        const rec: TodayRec = {
+          ...getData.recommendation,
+          airing:   getData.airing,
+          bpRange:  getData.bpRange,
+          highF:    getData.forecast?.days?.[0]?.highF,
+          lowF:     getData.forecast?.days?.[0]?.lowF,
+          cityName: getData.forecast?.cityName,
+        };
         setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec}:s));
         triggerSummary(roomId);
         return;
@@ -327,11 +334,13 @@ export default function DashboardPage() {
   async function toggleNotif(roomId: string, enabled: boolean) {
     setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,notifEnabled:enabled}:s));
     try {
-      await fetch(`/api/rooms/${roomId}/notifications`,{
-        method:"PATCH", headers:{"Content-Type":"application/json"},
+      const res = await fetch(`/api/rooms/${roomId}/notifications`,{
+        method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ enabled }),
       });
-    } catch { /* revert on failure */
+      if (!res.ok) throw new Error("Failed");
+    } catch {
+      // Revert on failure
       setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,notifEnabled:!enabled}:s));
     }
   }
@@ -365,8 +374,7 @@ export default function DashboardPage() {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ rooms:loaded.map(s=>({name:s.room.name,shouldOpen:s.rec!.shouldOpen})), highF:first.highF??70, lowF:first.lowF??55, cityName:first.cityName }),
     }).then(r=>r.json()).then(d=>{ if(d.text) setHouseLine(d.text); }).catch(()=>{});
-    if (!greeting) {
-      fetch("/api/ai/greeting",{
+    fetch("/api/ai/greeting",{
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           date:today, cityName:first.cityName, highF:first.highF??70, lowF:first.lowF??55,
@@ -376,7 +384,6 @@ export default function DashboardPage() {
           })),
         }),
       }).then(r=>r.json()).then(d=>{ if(d.text) setGreeting(d.text); }).catch(()=>{});
-    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[roomStates.map(s=>!!s.rec).join(",")]);
 

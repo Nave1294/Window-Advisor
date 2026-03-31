@@ -82,6 +82,8 @@ const ALTERS = [
   "ALTER TABLE rooms ADD COLUMN last_notified_open TEXT",
   "ALTER TABLE rooms ADD COLUMN last_notified_close TEXT",
   "ALTER TABLE recommendations ADD COLUMN airing_windows TEXT",
+  "ALTER TABLE recommendations ADD COLUMN bp_range TEXT",
+  "ALTER TABLE recommendations ADD COLUMN forecast_meta TEXT",
 ];
 
 export async function runMigrations(dbUrl?: string) {
