@@ -20,7 +20,7 @@ interface TodayRec {
   airing?:AiringInfo;
   bpRange?: { min:number; max:number; label:string };
 }
-interface RoomState { room:Room; rec:TodayRec|null; loading:boolean; error:string; summary:string; notifEnabled:boolean; }
+interface RoomState { room:Room; rec:TodayRec|null; loading:boolean; error:string; summary:string; notifEnabled:boolean; lastRefreshed:number|null; }
 
 function todayLabel() {
   return new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",timeZone:"America/New_York"});
@@ -79,7 +79,7 @@ function DeleteModal({ roomName,onConfirm,onCancel,deleting }:{roomName:string;o
 function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
   state:RoomState; onRefresh:()=>void; onDelete:()=>void; onToggleNotif:(v:boolean)=>void;
 }) {
-  const { room,rec,loading,error,summary,notifEnabled } = state;
+  const { room,rec,loading,error,summary,notifEnabled,lastRefreshed } = state;
   const [expanded, setExpanded] = useState(false);
   const today = todayDate();
   const hour  = nowHour();
@@ -89,22 +89,54 @@ function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
   const condLine      = rec ? conditionLine(rec.shouldOpen, rec.openPeriods, today, hour) : "";
   const airLine       = needsAiring ? airingLine(airingWindows, today, hour) : "";
 
+  // "Updated X min ago" label
+  const updatedLabel = lastRefreshed ? (() => {
+    const mins = Math.floor((Date.now() - lastRefreshed) / 60000);
+    if (mins < 1) return "Updated just now";
+    if (mins === 1) return "Updated 1 min ago";
+    if (mins < 60) return `Updated ${mins} min ago`;
+    const hrs = Math.floor(mins / 60);
+    return `Updated ${hrs}h ago`;
+  })() : null;
+
   return (
     <div className="card-raised" style={{overflow:"hidden"}}>
       {/* Header */}
       <div style={{padding:"16px 20px 12px",borderBottom:"0.5px solid var(--border)",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
-        <div>
+        <div style={{flex:1,minWidth:0}}>
           <h2 style={{fontFamily:"'Lora',serif",fontSize:18,fontWeight:600,color:"var(--navy)",marginBottom:2}}>{room.name}</h2>
-          <p style={{fontSize:12,color:"var(--muted)"}}>
-            Floor {room.floorNumber}
-            {rec?.bpRange
-              ? ` · Balance point ${rec.bpRange.label}`
-              : room.balancePoint!==null
-                ? ` · Balance point ${room.balancePoint?.toFixed(1)}°F`
-                : ""}
-          </p>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <p style={{fontSize:12,color:"var(--muted)"}}>
+              Floor {room.floorNumber}
+              {rec?.bpRange
+                ? ` · Balance point ${rec.bpRange.label}`
+                : room.balancePoint!==null
+                  ? ` · Balance point ${room.balancePoint?.toFixed(1)}°F`
+                  : ""}
+            </p>
+            {updatedLabel && (
+              <span style={{fontSize:11,color:"var(--muted-light)"}}>· {updatedLabel}</span>
+            )}
+          </div>
         </div>
-        <div style={{display:"flex",gap:8,flexShrink:0}}>
+        <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
+          {/* Refresh button — always visible */}
+          <button
+            onClick={onRefresh}
+            disabled={loading}
+            title="Refresh forecast"
+            style={{
+              display:"flex",alignItems:"center",justifyContent:"center",
+              width:30,height:30,borderRadius:8,border:"0.5px solid var(--border-mid)",
+              background:"var(--bg-subtle)",cursor:loading?"not-allowed":"pointer",
+              opacity:loading?0.4:1,transition:"opacity 0.2s",
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{transform:loading?"rotate(180deg)":"rotate(0deg)",transition:"transform 0.5s"}}>
+              <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5a5.5 5.5 0 0 1 4 1.7" stroke="var(--muted)" strokeWidth="1.4" strokeLinecap="round" fill="none"/>
+              <polyline points="12,1 12,4.5 15.5,4.5" stroke="var(--muted)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+            </svg>
+          </button>
           <Link href={`/edit/${room.id}`} style={{fontSize:12,fontWeight:500,color:"var(--muted)",textDecoration:"none",padding:"5px 10px",background:"var(--bg-subtle)",borderRadius:8,border:"0.5px solid var(--border-mid)"}}>Edit</Link>
           <button onClick={onDelete} style={{fontSize:12,fontWeight:500,color:"var(--error)",padding:"5px 10px",background:"var(--error-light)",borderRadius:8,border:"0.5px solid #FFAAAA",cursor:"pointer"}}>Delete</button>
         </div>
@@ -145,11 +177,11 @@ function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
                 <p style={{fontSize:14,color:"var(--navy)",lineHeight:1.5,marginBottom:summary?4:0}}>
                   {summary || condLine}
                 </p>
-                {summary && <p style={{fontSize:13,color:"#1A8C3A",fontWeight:500}}>{condLine}</p>}
+                {summary && <p style={{fontSize:13,color:rec.shouldOpen?"#1A8C3A":"var(--muted)",fontWeight:500}}>{condLine}</p>}
               </div>
             </div>
 
-            {/* Air quality */}
+            {/* Air quality — only show if room has occupied hours */}
             {needsAiring && (
               <div style={{
                 display:"flex",alignItems:"flex-start",gap:12,padding:"12px 16px",
@@ -159,7 +191,7 @@ function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
                 <div>
                   <p style={{fontSize:14,color:"var(--navy)",marginBottom:airLine?3:0}}>Air quality</p>
                   <p style={{fontSize:13,color:"var(--muted)",fontWeight:500}}>
-                    {airLine || "No suitable slots during occupied hours today."}
+                    {airLine || "Outdoor conditions aren't ideal for airing out today — try opening briefly when rain clears."}
                   </p>
                 </div>
               </div>
@@ -201,7 +233,11 @@ function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
               <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:8,paddingTop:2}}>
                 <div style={{display:"flex",gap:12,flexWrap:"wrap",fontSize:12,color:"var(--muted)",padding:"8px 12px",background:"var(--bg-subtle)",borderRadius:"var(--radius-sm)"}}>
                   {rec.cityName && <span>📍 {rec.cityName}</span>}
-                  {rec.highF!=null && <span>High {rec.highF.toFixed(0)}°F · Low {rec.lowF?.toFixed(0)}°F</span>}
+                  {rec.highF!=null && (
+                    rec.lowF!=null && rec.lowF !== rec.highF
+                      ? <span>High {rec.highF.toFixed(0)}°F · Low {rec.lowF.toFixed(0)}°F</span>
+                      : <span>Forecast {rec.highF.toFixed(0)}°F</span>
+                  )}
                   {room.balancePoint!=null && <span>Balance point {room.balancePoint.toFixed(1)}°F</span>}
                   <span>Comfort {room.minTempF}–{room.maxTempF}°F · {room.minHumidity}–{room.maxHumidity}% RH</span>
                 </div>
@@ -244,7 +280,6 @@ function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
 
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:4}}>
                   <span style={{fontSize:12,color:"var(--muted-light)"}}>{rec.emailSent?"✓ Email sent this morning":"Email sends at 7 AM"}</span>
-                  <button className="btn-text" style={{fontSize:13}} onClick={onRefresh}>Refresh</button>
                 </div>
               </div>
             )}
@@ -273,17 +308,24 @@ export default function DashboardPage() {
       const getData = await getRes.json();
 
       if (getData.recommendation) {
-        const rec: TodayRec = {
-          ...getData.recommendation,
-          airing:   getData.airing,
-          bpRange:  getData.bpRange,
-          highF:    getData.forecast?.days?.[0]?.highF,
-          lowF:     getData.forecast?.days?.[0]?.lowF,
-          cityName: getData.forecast?.cityName,
-        };
-        setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec}:s));
-        triggerSummary(roomId);
-        return;
+        const highF = getData.forecast?.days?.[0]?.highF;
+        const lowF  = getData.forecast?.days?.[0]?.lowF;
+        // If high === low the forecastMeta is stale — fall through to fresh POST
+        if (highF != null && lowF != null && highF === lowF) {
+          // fall through to POST below
+        } else {
+          const rec: TodayRec = {
+            ...getData.recommendation,
+            airing:   getData.airing,
+            bpRange:  getData.bpRange,
+            highF,
+            lowF,
+            cityName: getData.forecast?.cityName,
+          };
+          setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec,lastRefreshed:Date.now()}:s));
+          triggerSummary(roomId);
+          return;
+        }
       }
 
       const postRes  = await fetch(`/api/rooms/${roomId}/recommend`,{method:"POST"});
@@ -301,7 +343,7 @@ export default function DashboardPage() {
         airing:        postData.airing,
         bpRange:       postData.bpRange,
       };
-      setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec}:s));
+      setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec,lastRefreshed:Date.now()}:s));
       triggerSummary(roomId);
     } catch(err) {
       setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,error:err instanceof Error?err.message:"Failed."}:s));
@@ -353,6 +395,7 @@ export default function DashboardPage() {
         const states:RoomState[]=(d.rooms as Room[]).map(room=>({
           room, rec:null, loading:false, error:"", summary:"",
           notifEnabled: room.notificationsEnabled,
+          lastRefreshed: null,
         }));
         setRoomStates(states);
         states.forEach(s=>loadRec(s.room.id));
@@ -378,6 +421,7 @@ export default function DashboardPage() {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           date:today, cityName:first.cityName, highF:first.highF??70, lowF:first.lowF??55,
+          hourOfDay: nowHour(),
           rooms:loaded.map(s=>({
             shouldOpen:s.rec!.shouldOpen,
             bpRange: s.rec?.bpRange ?? null,
@@ -387,12 +431,31 @@ export default function DashboardPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[roomStates.map(s=>!!s.rec).join(",")]);
 
+  // Hourly auto-refresh — silently re-fetches all rooms and regenerates greeting
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setGreeting(""); // clear so greeting regenerates with correct time of day
+      setRoomStates(prev => {
+        prev.forEach(s => loadRec(s.room.id));
+        return prev;
+      });
+    }, 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [loadRec]);
+
+  // Minute tick — forces re-render so "X min ago" label stays current
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+
   async function confirmDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
       await fetch(`/api/rooms/${deleteTarget.id}`,{method:"DELETE"});
-      setRoomStates(prev=>prev.filter(s=>s.room.id!==deleteTarget.id));
+      setRoomStates(prev=>prev.filter(s=>s.room.id!==deleteTarget!.id));
       setDeleteTarget(null);
     } catch { setDeleteTarget(null); }
     finally { setDeleting(false); }
