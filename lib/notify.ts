@@ -1,25 +1,20 @@
-/**
- * Notification Engine
- * ====================
- * Checks all rooms with notifications enabled, determines if a condition
- * window is opening or closing within the next hour, and sends an email.
- */
-
+import cron from "node-cron";
 import { db } from "./db";
 import { users, rooms, recommendations } from "./schema";
 import { eq } from "drizzle-orm";
 import { Resend } from "resend";
 import type { OpenPeriod } from "./recommendation";
 
-function client() {
-  const k = process.env.RESEND_API_KEY;
-  if (!k) throw new Error("RESEND_API_KEY not set.");
-  return new Resend(k);
-}
-function from() { return process.env.RESEND_FROM_EMAIL ?? "Window Advisor <onboarding@resend.dev>"; }
+function client() { return new Resend(process.env.RESEND_API_KEY ?? ""); }
+function from()   { return process.env.RESEND_FROM_EMAIL ?? "Window Advisor <onboarding@resend.dev>"; }
 function appUrl() { return process.env.APP_URL ?? "https://your-app.up.railway.app"; }
 
-function todayDate() { return new Date().toISOString().slice(0,10); }
+function todayEastern() {
+  return new Date().toLocaleDateString("en-CA", { timeZone:"America/New_York" });
+}
+function nowHourEastern() {
+  return parseInt(new Date().toLocaleString("en-US", { hour:"numeric", hour12:false, timeZone:"America/New_York" }));
+}
 
 function parseHour(timeStr: string): number {
   const clean = timeStr.replace(":00","").trim();
@@ -32,18 +27,35 @@ function parseHour(timeStr: string): number {
 }
 
 async function generateMessage(params: {
-  roomName: string; action: "open"|"close"; reasoning: string;
-  highF: number; lowF: number; balancePoint: number|null; until?: string;
+  roomName:string; action:"open"|"close"; reasoning:string;
+  highF:number; lowF:number; balancePoint:number|null; until?:string;
 }): Promise<string> {
+  // Call Anthropic directly — no HTTP self-fetch (avoids Railway SSL error)
   try {
-    const base = process.env.APP_URL ?? "http://localhost:3000";
-    const res  = await fetch(`${base}/api/ai/notification`, {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return fallbackMessage(params);
+
+    const prompt = `Write a very short, friendly push notification email body (2-3 sentences max) about home ventilation.
+
+Room: ${params.roomName}
+Action: ${params.action === "open" ? "Time to open the windows" : "Time to close the windows"}
+${params.until ? `Good conditions until: ${params.until}` : ""}
+Today: High ${params.highF}°F, Low ${params.lowF}°F${params.balancePoint ? `, balance point ${params.balancePoint.toFixed(1)}°F` : ""}
+Reason: ${params.reasoning}
+
+Be warm, specific, brief. No subject line. No greeting. Just the body.
+Example open: "Outdoor temps have dropped — good conditions in the ${params.roomName} right now. Worth opening up for the next couple of hours."
+Example close: "Conditions outside are shifting — time to close up the ${params.roomName}."
+
+Write only the body.`;
+
+    const res  = await fetch("https://api.anthropic.com/v1/messages", {
       method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify(params),
+      headers:{ "Content-Type":"application/json", "x-api-key":apiKey, "anthropic-version":"2023-06-01" },
+      body: JSON.stringify({ model:"claude-haiku-4-5-20251001", max_tokens:100, messages:[{role:"user",content:prompt}] }),
     });
     const data = await res.json();
-    return data.text || fallbackMessage(params);
+    return data.content?.[0]?.text?.trim() || fallbackMessage(params);
   } catch {
     return fallbackMessage(params);
   }
@@ -57,13 +69,11 @@ function fallbackMessage(params: { roomName:string; action:"open"|"close"; until
 }
 
 async function sendNotification(opts: {
-  to: string; roomName: string; action: "open"|"close";
-  body: string; email: string;
+  to:string; roomName:string; action:"open"|"close"; body:string; email:string;
 }) {
-  const { to, roomName, action, body } = opts;
-  const subject = action === "open"
-    ? `🪟 Good conditions in the ${roomName} now`
-    : `🔒 Time to close the ${roomName}`;
+  const subject = opts.action === "open"
+    ? `🪟 Good conditions in the ${opts.roomName} now`
+    : `🔒 Time to close the ${opts.roomName}`;
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
 <body style="margin:0;padding:0;background:#F7F3EC;font-family:'Helvetica Neue',Arial,sans-serif;">
@@ -74,8 +84,8 @@ async function sendNotification(opts: {
   </td></tr>
   <tr><td style="background:#FFFFFF;padding:24px;border-radius:0 0 12px 12px;border:1px solid #E2E8F0;border-top:none;">
     <h2 style="font-family:Georgia,serif;font-size:20px;color:#1A2B3C;margin:0 0 14px;">${subject}</h2>
-    <p style="font-size:15px;color:#374151;line-height:1.65;margin:0 0 20px;">${body}</p>
-    <a href="${appUrl()}/dashboard/${encodeURIComponent(opts.email)}" 
+    <p style="font-size:15px;color:#374151;line-height:1.65;margin:0 0 20px;">${opts.body}</p>
+    <a href="${appUrl()}/dashboard/${encodeURIComponent(opts.email)}"
        style="display:inline-block;padding:10px 20px;background:#0071E3;color:white;border-radius:8px;font-size:14px;font-weight:500;text-decoration:none;">
       View dashboard
     </a>
@@ -83,14 +93,17 @@ async function sendNotification(opts: {
 </table></td></tr></table>
 </body></html>`;
 
-  await client().emails.send({ from: from(), to: [to], subject, html, text: body });
+  await client().emails.send({ from:from(), to:[opts.to], subject, html, text:opts.body });
 }
 
-export async function runNotificationCheck(): Promise<{ sent: number; checked: number }> {
-  const today    = todayDate();
-  const nowHour  = new Date().getHours();
-  const nowISO   = new Date().toISOString();
+export async function runNotificationCheck(): Promise<{ sent:number; checked:number }> {
+  const today   = todayEastern();
+  const nowHour = nowHourEastern();
+  const nowISO  = new Date().toISOString();
   let sent = 0, checked = 0;
+
+  // Only run during waking hours Eastern
+  if (nowHour < 7 || nowHour >= 22) return { sent, checked };
 
   const notifRooms = await db.select().from(rooms).where(eq(rooms.notificationsEnabled, true));
 
@@ -100,16 +113,17 @@ export async function runNotificationCheck(): Promise<{ sent: number; checked: n
       const user = (await db.select().from(users).where(eq(users.id, room.userId)))[0];
       if (!user) continue;
 
-      // Get today's recommendation
-      const allRecs = await db.select().from(recommendations).where(eq(recommendations.roomId, room.id)).all();
+      const allRecs  = await db.select().from(recommendations).where(eq(recommendations.roomId, room.id)).all();
       const todayRec = allRecs.find(r => r.date === today);
       if (!todayRec) continue;
 
       const openPeriods: OpenPeriod[] = todayRec.openPeriods ? JSON.parse(todayRec.openPeriods) : [];
       if (!openPeriods.length) continue;
 
-      // Only notify during waking hours
-      if (nowHour < 7 || nowHour >= 22) continue;
+      // Don't re-notify within 4 hours
+      const fourHoursAgo = Date.now() - 4 * 60 * 60 * 1000;
+      const lastOpen  = room.lastNotifiedOpen  ? new Date(room.lastNotifiedOpen).getTime()  : 0;
+      const lastClose = room.lastNotifiedClose ? new Date(room.lastNotifiedClose).getTime() : 0;
 
       // Check if a window is OPENING in the next hour
       const opening = openPeriods.find(p => {
@@ -123,37 +137,28 @@ export async function runNotificationCheck(): Promise<{ sent: number; checked: n
         return endH === nowHour || endH === nowHour + 1;
       });
 
-      // Don't re-notify within 4 hours
-      const lastOpen  = room.lastNotifiedOpen  ? new Date(room.lastNotifiedOpen).getTime()  : 0;
-      const lastClose = room.lastNotifiedClose ? new Date(room.lastNotifiedClose).getTime() : 0;
-      const fourHoursAgo = Date.now() - 4 * 60 * 60 * 1000;
-
       if (opening && lastOpen < fourHoursAgo) {
-        const nextClose = openPeriods.find(p => parseHour(p.from) === parseHour(opening.from));
         const body = await generateMessage({
-          roomName:     room.name,
-          action:       "open",
-          reasoning:    todayRec.reasoning,
-          highF:        70, lowF: 55,
-          balancePoint: room.balancePoint,
-          until:        nextClose?.to,
+          roomName:room.name, action:"open",
+          reasoning:todayRec.reasoning,
+          highF:70, lowF:55, balancePoint:room.balancePoint,
+          until: opening.to,
         });
-        await sendNotification({ to: user.email, roomName: room.name, action: "open", body, email: user.email });
-        await db.update(rooms).set({ lastNotifiedOpen: nowISO }).where(eq(rooms.id, room.id));
+        await sendNotification({ to:user.email, roomName:room.name, action:"open", body, email:user.email });
+        await db.update(rooms).set({ lastNotifiedOpen:nowISO }).where(eq(rooms.id, room.id));
+        console.log(`[notify] Open notification sent to ${user.email} for ${room.name}`);
         sent++;
       } else if (closing && !opening && lastClose < fourHoursAgo) {
-        // Find next opening if any
         const nextOpen = openPeriods.find(p => parseHour(p.from) > nowHour);
         const body = await generateMessage({
-          roomName:     room.name,
-          action:       "close",
-          reasoning:    todayRec.reasoning,
-          highF:        70, lowF: 55,
-          balancePoint: room.balancePoint,
-          until:        nextOpen ? `from ${nextOpen.from}` : undefined,
+          roomName:room.name, action:"close",
+          reasoning:todayRec.reasoning,
+          highF:70, lowF:55, balancePoint:room.balancePoint,
+          until: nextOpen ? `from ${nextOpen.from}` : undefined,
         });
-        await sendNotification({ to: user.email, roomName: room.name, action: "close", body, email: user.email });
-        await db.update(rooms).set({ lastNotifiedClose: nowISO }).where(eq(rooms.id, room.id));
+        await sendNotification({ to:user.email, roomName:room.name, action:"close", body, email:user.email });
+        await db.update(rooms).set({ lastNotifiedClose:nowISO }).where(eq(rooms.id, room.id));
+        console.log(`[notify] Close notification sent to ${user.email} for ${room.name}`);
         sent++;
       }
     } catch (err) {

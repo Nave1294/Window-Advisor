@@ -99,6 +99,9 @@ export async function POST(
       cityName: forecast.cityName,
       date:     today,
       days:     forecast.days.map(d => ({ date: d.date, highF: d.highF, lowF: d.lowF })),
+      slots:    forecast.days.flatMap(d => d.slots.map(s => ({
+        date: d.date, hour: s.hour, precipProb: s.precipProb, tempF: s.tempF,
+      }))),
     },
   });
 }

@@ -6,6 +6,7 @@ import { AppHeader } from "@/app/components/AppHeader";
 import type { OpenPeriod } from "@/lib/recommendation";
 import type { AiringWindow } from "@/lib/airing";
 import { conditionLine, airingLine, wholeHouseLine } from "@/lib/condition-line";
+import { ForecastStrip } from "@/app/components/ForecastStrip";
 
 interface WindowChip { size:string; direction:string; }
 interface Room {
@@ -19,6 +20,8 @@ interface TodayRec {
   reasoning:string; emailSent:boolean; highF?:number; lowF?:number; cityName?:string;
   airing?:AiringInfo;
   bpRange?: { min:number; max:number; label:string };
+  forecastDays?:  { date:string; highF:number; lowF:number }[];
+  forecastSlots?: { date:string; hour:number; precipProb:number; tempF:number }[];
 }
 interface RoomState { room:Room; rec:TodayRec|null; loading:boolean; error:string; summary:string; notifEnabled:boolean; lastRefreshed:number|null; }
 
@@ -181,18 +184,48 @@ function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
               </div>
             </div>
 
-            {/* Air quality — only show if room has occupied hours */}
+            {/* Air quality — always show if room has occupied hours */}
             {needsAiring && (
               <div style={{
                 display:"flex",alignItems:"flex-start",gap:12,padding:"12px 16px",
                 borderRadius:"var(--radius-md)",background:"var(--bg-subtle)",border:"0.5px solid var(--border-mid)",
               }}>
                 <span style={{fontSize:20,flexShrink:0,marginTop:2}}>🌬</span>
-                <div>
-                  <p style={{fontSize:14,color:"var(--navy)",marginBottom:airLine?3:0}}>Air quality</p>
-                  <p style={{fontSize:13,color:"var(--muted)",fontWeight:500}}>
-                    {airLine || "Outdoor conditions aren't ideal for airing out today — try opening briefly when rain clears."}
-                  </p>
+                <div style={{flex:1}}>
+                  <p style={{fontSize:14,color:"var(--navy)",marginBottom:6}}>Air quality</p>
+                  {(() => {
+                    const todayW = airingWindows.filter(w=>w.date===today);
+                    if (!todayW.length) return (
+                      <p style={{fontSize:13,color:"var(--muted)"}}>No occupied slots found today.</p>
+                    );
+                    // Show up to 3 options ranked by disruption
+                    const options = todayW.slice(0, 3);
+                    return (
+                      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                        {options.map((w,i) => (
+                          <div key={i} style={{
+                            display:"flex",alignItems:"center",justifyContent:"space-between",
+                            padding:"7px 10px",borderRadius:8,
+                            background:i===0?"var(--white)":"transparent",
+                            border:i===0?"0.5px solid var(--border)":"none",
+                          }}>
+                            <div>
+                              <span style={{fontSize:13,fontWeight:i===0?600:400,color:"var(--navy)"}}>{w.label}</span>
+                              {i===0 && <span style={{fontSize:11,marginLeft:6,color:"var(--sky)"}}>Best option</span>}
+                            </div>
+                            <span style={{fontSize:11,padding:"2px 7px",borderRadius:10,fontWeight:500,
+                              background:w.disruption==="low"?"var(--sage-light)":w.disruption==="moderate"?"var(--amber-light)":"var(--error-light)",
+                              color:w.disruption==="low"?"#1A8C3A":w.disruption==="moderate"?"#B25C00":"var(--error)"}}>
+                              {w.disruption==="low"?"Low impact":w.disruption==="moderate"?"Moderate":"High impact"}
+                            </span>
+                          </div>
+                        ))}
+                        {todayW[0].reason && (
+                          <p style={{fontSize:11,color:"var(--muted)",marginTop:2}}>{todayW[0].reason}</p>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             )}
@@ -316,11 +349,13 @@ export default function DashboardPage() {
         } else {
           const rec: TodayRec = {
             ...getData.recommendation,
-            airing:   getData.airing,
-            bpRange:  getData.bpRange,
+            airing:        getData.airing,
+            bpRange:       getData.bpRange,
             highF,
             lowF,
-            cityName: getData.forecast?.cityName,
+            cityName:      getData.forecast?.cityName,
+            forecastDays:  getData.forecast?.days,
+            forecastSlots: getData.forecast?.slots,
           };
           setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec,lastRefreshed:Date.now()}:s));
           triggerSummary(roomId);
@@ -342,6 +377,8 @@ export default function DashboardPage() {
         cityName:      postData.forecast?.cityName,
         airing:        postData.airing,
         bpRange:       postData.bpRange,
+        forecastDays:  postData.forecast?.days,
+        forecastSlots: postData.forecast?.slots,
       };
       setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec,lastRefreshed:Date.now()}:s));
       triggerSummary(roomId);
@@ -479,12 +516,26 @@ export default function DashboardPage() {
             </Link>
           </div>
 
+          {/* House recommendation — bold, one line */}
           {houseLine && (
-            <div className="fade-up" style={{padding:"14px 18px",borderRadius:"var(--radius-md)",background:"var(--white)",border:"0.5px solid var(--border-mid)",boxShadow:"var(--shadow-sm)",marginBottom:greeting?10:0}}>
+            <div className="fade-up" style={{padding:"14px 18px",borderRadius:"var(--radius-md)",background:"var(--white)",border:"0.5px solid var(--border-mid)",boxShadow:"var(--shadow-sm)",marginBottom:10}}>
               <p style={{fontSize:15,fontWeight:600,color:"var(--navy)",marginBottom:greeting?4:0}}>{houseLine}</p>
-              {greeting && <p style={{fontSize:13,color:"var(--muted)",lineHeight:1.6}}>{greeting}</p>}
+              {greeting && <p style={{fontSize:13,color:"var(--muted)",lineHeight:1.5}}>{greeting}</p>}
             </div>
           )}
+
+          {/* Forecast strip — shown once for the house */}
+          {(() => {
+            const first = roomStates.find(s=>s.rec?.forecastDays?.length);
+            if (!first?.rec?.forecastDays) return null;
+            return (
+              <ForecastStrip
+                days={first.rec.forecastDays}
+                slots={first.rec.forecastSlots ?? []}
+                today={todayDate()}
+              />
+            );
+          })()}
         </div>
 
         {pageLoading && <div style={{textAlign:"center",padding:"60px 0",color:"var(--muted)",fontSize:14}}>Loading…</div>}
