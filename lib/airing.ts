@@ -61,11 +61,17 @@ function disruptionLabel(score: number): "low" | "moderate" | "high" {
 
 function slotReason(slot: HourlySlot, score: number, balancePt: number): string {
   const parts: string[] = [];
-  if (score < 8)               parts.push(`outdoor temp (${slot.tempF.toFixed(0)}°F) is close to your balance point`);
-  else if (slot.tempF < balancePt) parts.push(`outdoor air is cool (${slot.tempF.toFixed(0)}°F) — brief open won't disrupt the room`);
-  else                         parts.push(`least disruptive available slot (${slot.tempF.toFixed(0)}°F outside)`);
-  if (slot.precipProb < 0.1)   parts.push("no rain risk");
-  if (slot.windSpeedMph > 5)   parts.push("light breeze speeds air exchange");
+  if (slot.precipProb >= PRECIP_AIRING_CUTOFF) {
+    parts.push(`best available slot despite ${Math.round(slot.precipProb * 100)}% rain — open briefly if rain pauses`);
+  } else if (score < 8) {
+    parts.push(`outdoor temp (${slot.tempF.toFixed(0)}°F) is close to your balance point`);
+  } else if (slot.tempF < balancePt) {
+    parts.push(`outdoor air is cool (${slot.tempF.toFixed(0)}°F) — brief open won't disrupt the room`);
+  } else {
+    parts.push(`least disruptive available slot (${slot.tempF.toFixed(0)}°F outside)`);
+  }
+  if (slot.precipProb < 0.1)  parts.push("no rain risk");
+  if (slot.windSpeedMph > 5)  parts.push("light breeze speeds air exchange");
   return parts.join("; ") + ".";
 }
 
@@ -99,7 +105,8 @@ export function generateAiringRecommendations(
       const slotInterval = Math.min(MAX_AIRING_INTERVAL_MIN, Math.max(MIN_AIRING_INTERVAL_MIN, Math.round(rawInterval / 5) * 5));
 
       const score = disruptionScore(slot, room, balancePt);
-      if (score < 999) candidates.push({ slot, score, intervalMins: slotInterval });
+      // Always include — even rainy slots are candidates (least-bad fallback)
+      candidates.push({ slot, score, intervalMins: slotInterval });
     }
 
     if (!candidates.length) continue;

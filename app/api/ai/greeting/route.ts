@@ -31,6 +31,7 @@ Facts you may use:
 
 RULES:
 - Start with "${salutation}" — match the time of day exactly
+- Always mention the forecast high and low temperatures naturally in the greeting
 - Never invent temperatures or numbers not listed above
 - Include ONE creative element: a holiday or observance for this date, a weather pun, a ventilation joke, or a seasonal observation
 - Warm, brief, clever. No emojis. Don't be corny.`;

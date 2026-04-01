@@ -96,7 +96,10 @@ function roomBlock(room: RoomDigest, date: string): string {
           <div style="font-size:12px;color:#94A3B8;margin-top:2px;">Floor ${room.floorNumber}${room.balancePoint != null ? ` · Balance point ${room.balancePoint.toFixed(1)}°F` : ""}</div>
           ${biasNote}
         </div>
-        <div style="text-align:right;font-size:12px;color:#94A3B8;">↑${room.highF.toFixed(0)}°F · ↓${room.lowF.toFixed(0)}°F</div>
+        <div style="text-align:right;">
+          <div style="font-size:13px;font-weight:600;color:#1A2B3C;">↑${room.highF.toFixed(0)}°F · ↓${room.lowF.toFixed(0)}°F</div>
+          <div style="font-size:11px;color:#94A3B8;margin-top:2px;">${room.cityName}</div>
+        </div>
       </div>
 
       <div style="background:${sbg};border:1px solid ${sbd};border-radius:8px;padding:10px 14px;">
@@ -132,6 +135,18 @@ function dailyHtml(email: string, date: string, digests: RoomDigest[]): string {
   if (hasMultiDay) summaryParts.push("Some windows stay open for multiple days.");
   if (anyAiring)   summaryParts.push("CO₂ airing reminders included below.");
 
+  const highF = digests[0]?.highF;
+  const lowF  = digests[0]?.lowF;
+  const forecastStrip = (highF != null && lowF != null && highF !== lowF)
+    ? `<tr><td style="background:#243B55;padding:10px 28px;">
+        <div style="font-size:13px;color:#A8C4D8;display:flex;gap:16px;">
+          <span>☀️ High ${highF.toFixed(0)}°F</span>
+          <span>🌙 Low ${lowF.toFixed(0)}°F</span>
+          ${city ? `<span>📍 ${city}</span>` : ""}
+        </div>
+      </td></tr>`
+    : "";
+
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Window Advisor — ${dateLabel}</title></head>
 <body style="margin:0;padding:0;background:#F7F3EC;font-family:'Helvetica Neue',Arial,sans-serif;">
@@ -141,6 +156,7 @@ function dailyHtml(email: string, date: string, digests: RoomDigest[]): string {
     <div style="font-family:Georgia,serif;font-size:20px;color:#FFFFFF;font-weight:600;">🪟 Window Advisor</div>
     <div style="font-size:13px;color:#7A9DB8;margin-top:6px;">${dateLabel}${city ? ` · ${city}` : ""}</div>
   </td></tr>
+  ${forecastStrip}
   <tr><td style="background:#2D4459;padding:14px 28px;">
     <div style="font-size:13px;color:#C8DCE8;">${summaryParts.join(" ")}</div>
   </td></tr>
@@ -160,6 +176,10 @@ function dailyText(email: string, date: string, digests: RoomDigest[]): string {
   const dateLabel = new Date(date + "T12:00:00Z").toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric" });
   const base = appUrl();
   const lines = [`WINDOW ADVISOR — ${dateLabel}`, "=".repeat(40), ""];
+  if (digests[0]?.highF != null && digests[0]?.lowF != null) {
+    lines.push(`Today's forecast: High ${digests[0].highF.toFixed(0)}°F · Low ${digests[0].lowF.toFixed(0)}°F${digests[0].cityName ? ` · ${digests[0].cityName}` : ""}`);
+    lines.push("");
+  }
 
   for (const r of digests) {
     lines.push(`${r.roomName} (Floor ${r.floorNumber})`);
