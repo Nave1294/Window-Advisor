@@ -15,6 +15,7 @@ function makeRoom(overrides: Partial<Room>={}): Room {
     minTempF:68,maxTempF:74,minHumidity:40,maxHumidity:55,
     balancePoint:41,comfortBias:0,
     notificationsEnabled:false,lastNotifiedOpen:null,lastNotifiedClose:null,
+    wallColor:"MEDIUM" as const,roofColor:"MEDIUM" as const,roofType:"ATTIC_BUFFERED" as const,
     ...overrides,
   };
 }
@@ -31,12 +32,6 @@ function day(date:string,slots:HourlySlot[]):DayForecast {
 
 {const sm=makeRoom({lengthFt:10,widthFt:10,ceilingHeightFt:8});const lg=makeRoom({lengthFt:20,widthFt:20,ceilingHeightFt:9});const d=day("2025-06-16",[slot(0),slot(3),slot(6)]);const rS=generateAiringRecommendations(sm,[d],41);const rL=generateAiringRecommendations(lg,[d],41);console.log("T1 interval scales:",rL.intervalMins>rS.intervalMins?"✅":"❌");}
 {const r=makeRoom({occupancyLevel:"EMPTY"});const d=day("2025-06-16",[slot(0)]);const res=generateAiringRecommendations(r,[d],41);console.log("T2 empty→no airing:",!res.needsAiring?"✅":"❌");}
-{const r=makeRoom();const d=day("2025-06-16",[slot(0,{precipProb:0.9}),slot(3,{precipProb:0.8}),slot(6,{precipProb:0.7})]);const res=generateAiringRecommendations(r,[d],41);console.log("T3 rain→no windows:",res.windows.length===0?"✅":"❌");}
-
-// T4: Kitchen has higher people count at dinner time
-{const kitchen=makeRoom({name:"Kitchen",heatSourceLevel:"KITCHEN_LAUNDRY"});
- const living=makeRoom({name:"Living Room",heatSourceLevel:"LIGHT_ELECTRONICS"});
- const d=day("2025-06-16",[slot(11,{tempF:62})]); // 5 PM slot (offset from 9 AM base)
- const rK=generateAiringRecommendations(kitchen,[d],41);
- const rL=generateAiringRecommendations(living,[d],41);
- console.log("T4 kitchen/living intervals differ or both work:",rK.needsAiring||rL.needsAiring?"✅":"❌");}
+// T3: rain slots are now always included as least-bad options — needsAiring can still be true
+{const r=makeRoom();const d=day("2025-06-16",[slot(0,{precipProb:0.9}),slot(3,{precipProb:0.8}),slot(6,{precipProb:0.7})]);const res=generateAiringRecommendations(r,[d],41);console.log("T3 rain→slots marked high-impact:",res.windows.every(w=>w.disruption==="high")?"✅":"❌");}
+{const kitchen=makeRoom({name:"Kitchen",heatSourceLevel:"KITCHEN_LAUNDRY"});const living=makeRoom({name:"Living Room",heatSourceLevel:"LIGHT_ELECTRONICS"});const d=day("2025-06-16",[slot(11,{tempF:62})]);const rK=generateAiringRecommendations(kitchen,[d],41);const rL=generateAiringRecommendations(living,[d],41);console.log("T4 kitchen/living both have options:",rK.needsAiring||rL.needsAiring?"✅":"❌");}

@@ -44,13 +44,15 @@ export async function POST(
   const result = generateRecommendation(roomFull, forecast.days);
   const airing = generateAiringRecommendations(room, forecast.days, balancePt);
 
-  // Calculate today's BP range from all forecast slots
+  // Calculate today's BP range and per-slot BP for timeline
   const { balancePointForSlot } = await import("@/lib/balance-point");
   const todaySlots = forecast.days[0]?.slots ?? [];
-  const todayBPs   = todaySlots.map(slot => {
+  const bpSlots = todaySlots.map(slot => {
     const dow = new Date(slot.ts * 1000).getUTCDay();
-    return balancePointForSlot(roomFull, dow, slot.hour, bias);
-  }).filter(bp => bp > 0);
+    return { hour: slot.hour, balancePt: balancePointForSlot(roomFull, dow, slot.hour, bias, slot.precipProb) };
+  }).filter(s => s.balancePt > 0);
+
+  const todayBPs = bpSlots.map(s => s.balancePt);
   const bpMin = todayBPs.length ? Math.min(...todayBPs) : balancePt;
   const bpMax = todayBPs.length ? Math.max(...todayBPs) : balancePt;
   const bpRange = Math.abs(bpMax - bpMin) < 1
@@ -95,12 +97,13 @@ export async function POST(
     },
     airing: { ...airing, intervalMins: airing.intervalMins, summary: airing.summary, needsAiring: airing.needsAiring },
     bpRange,
+    bpSlots,
     forecast: {
       cityName: forecast.cityName,
       date:     today,
       days:     forecast.days.map(d => ({ date: d.date, highF: d.highF, lowF: d.lowF })),
       slots:    forecast.days.flatMap(d => d.slots.map(s => ({
-        date: d.date, hour: s.hour, precipProb: s.precipProb, tempF: s.tempF,
+        date: d.date, hour: s.hour, precipProb: s.precipProb, tempF: s.tempF, humidity: s.humidity,
       }))),
     },
   });

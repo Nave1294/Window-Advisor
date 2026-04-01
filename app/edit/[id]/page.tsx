@@ -12,6 +12,8 @@ type Insulation  = "BELOW_CODE" | "AT_CODE" | "ABOVE_CODE";
 type Orientation = "NS" | "EW";
 type OccLevel    = "ONE_TWO" | "THREE_FOUR";
 type HeatSource  = "MINIMAL" | "LIGHT_ELECTRONICS" | "HOME_OFFICE" | "KITCHEN_LAUNDRY";
+type SurfaceColor = "LIGHT" | "MEDIUM" | "DARK";
+type RoofType    = "ATTIC_BUFFERED" | "FLAT_VAULTED" | "DIRECT_EXPOSED";
 
 interface WindowEntry { id:string; size:WindowSize; direction:Direction; glazingOverride?:GlazingType; }
 
@@ -19,6 +21,7 @@ interface FormData {
   roomName:string; floorNumber:number; isTopFloor:boolean|null;
   lengthFt:string; widthFt:string; ceilingHeightFt:string; orientation:Orientation|"";
   insulationLevel:Insulation|""; glazingType:GlazingType|""; hasCrossBreeze:boolean|null;
+  wallColor:SurfaceColor; roofColor:SurfaceColor; roofType:RoofType|"";
   windows:WindowEntry[]; exteriorWalls:Direction[];
   occupancyLevel:OccLevel;
   unoccupiedBlocks:UnoccupiedBlock[];
@@ -83,6 +86,7 @@ export default function EditRoomPage() {
     roomName:"",floorNumber:1,isTopFloor:null,
     lengthFt:"",widthFt:"",ceilingHeightFt:"",orientation:"",
     insulationLevel:"",glazingType:"",hasCrossBreeze:null,
+    wallColor:"MEDIUM",roofColor:"MEDIUM",roofType:"",
     windows:[],exteriorWalls:[],
     occupancyLevel:"ONE_TWO",unoccupiedBlocks:[],
     heatSourceLevel:"",
@@ -97,6 +101,7 @@ export default function EditRoomPage() {
         roomName:r.name,floorNumber:r.floorNumber,isTopFloor:r.isTopFloor,
         lengthFt:String(r.lengthFt),widthFt:String(r.widthFt),ceilingHeightFt:String(r.ceilingHeightFt),
         orientation:r.orientation,insulationLevel:r.insulationLevel,glazingType:r.glazingType,hasCrossBreeze:r.hasCrossBreeze,
+        wallColor:r.wallColor??"MEDIUM",roofColor:r.roofColor??"MEDIUM",roofType:r.roofType??"ATTIC_BUFFERED",
         windows:r.windows.map((w:{size:WindowSize;direction:Direction;glazingOverride?:GlazingType})=>({...w,id:crypto.randomUUID()})),
         exteriorWalls:r.exteriorWalls.map((w:{direction:Direction})=>w.direction),
         occupancyLevel:r.occupancyLevel??"ONE_TWO",
@@ -113,7 +118,7 @@ export default function EditRoomPage() {
     switch(step){
       case 0: if(!form.roomName.trim())return"Give this room a name."; if(form.isTopFloor===null)return"Indicate top floor."; break;
       case 1:{const l=parseFloat(form.lengthFt),w=parseFloat(form.widthFt),h=parseFloat(form.ceilingHeightFt);if(!l||l<=0)return"Valid length.";if(!w||w<=0)return"Valid width.";if(!h||h<=0||h>30)return"Valid ceiling height.";if(!form.orientation)return"Select orientation.";break;}
-      case 2: if(!form.insulationLevel)return"Select insulation.";if(!form.glazingType)return"Select glazing.";if(form.hasCrossBreeze===null)return"Indicate cross-breeze.";break;
+      case 2: if(!form.insulationLevel)return"Select insulation.";if(!form.glazingType)return"Select glazing.";if(form.hasCrossBreeze===null)return"Indicate cross-breeze.";if(!form.roofType)return"Select roof type.";break;
       case 3: if(!form.windows.length)return"Add at least one window.";break;
       case 4: if(!form.exteriorWalls.length)return"Select at least one exterior wall.";break;
       case 5:{const bad=form.unoccupiedBlocks.filter(b=>b.endHour<=b.startHour);if(bad.length)return"End time must be after start time.";break;}
@@ -135,6 +140,7 @@ export default function EditRoomPage() {
         roomName:form.roomName.trim(),floorNumber:form.floorNumber,isTopFloor:form.isTopFloor,
         lengthFt:parseFloat(form.lengthFt),widthFt:parseFloat(form.widthFt),ceilingHeightFt:parseFloat(form.ceilingHeightFt),
         orientation:form.orientation,insulationLevel:form.insulationLevel,glazingType:form.glazingType,hasCrossBreeze:form.hasCrossBreeze,
+        wallColor:form.wallColor,roofColor:form.roofColor,roofType:form.roofType,
         occupancyLevel:form.occupancyLevel,unoccupiedBlocks:form.unoccupiedBlocks,heatSourceLevel:form.heatSourceLevel,
         windows:form.windows.map(w=>({size:w.size,direction:w.direction,glazingOverride:w.glazingOverride})),
         exteriorWalls:form.exteriorWalls,minTempF:form.minTempF,maxTempF:form.maxTempF,minHumidity:form.minHumidity,maxHumidity:form.maxHumidity,
@@ -161,6 +167,9 @@ export default function EditRoomPage() {
       case 2:return(<div className="fade-up space-y-7">
         <div><Label>Wall insulation</Label><div className="space-y-2 mt-2">{INSULATION_OPTS.map(o=><RadioCard key={o.value} selected={form.insulationLevel===o.value} onClick={()=>set("insulationLevel",o.value)} label={o.label} desc={o.desc}/>)}</div></div>
         <div><Label>Window glazing</Label><div className="space-y-2 mt-2">{GLAZING_OPTS.map(o=><RadioCard key={o.value} selected={form.glazingType===o.value} onClick={()=>set("glazingType",o.value)} label={o.label} badge={o.u}/>)}</div></div>
+        <div><Label hint="Lighter surfaces absorb less solar heat">Exterior wall color</Label><div className="flex gap-3 mt-2">{(["LIGHT","MEDIUM","DARK"] as SurfaceColor[]).map(v=><button key={v} type="button" className={`option-pill flex-1 ${form.wallColor===v?"selected":""}`} onClick={()=>set("wallColor",v)}>{v.charAt(0)+v.slice(1).toLowerCase()}</button>)}</div></div>
+        <div><Label hint="Dark roofs absorb significantly more solar heat">Exterior roof color</Label><div className="flex gap-3 mt-2">{(["LIGHT","MEDIUM","DARK"] as SurfaceColor[]).map(v=><button key={v} type="button" className={`option-pill flex-1 ${form.roofColor===v?"selected":""}`} onClick={()=>set("roofColor",v)}>{v.charAt(0)+v.slice(1).toLowerCase()}</button>)}</div></div>
+        <div><Label hint="Attic space buffers heat transfer from the roof">Roof type</Label><div className="space-y-2 mt-2">{([["ATTIC_BUFFERED","Attic (buffered)","Air gap above ceiling"],["FLAT_VAULTED","Flat or vaulted","Ceiling directly below roof"],["DIRECT_EXPOSED","Directly exposed","No insulating layer"]] as [RoofType,string,string][]).map(([v,l,d])=><RadioCard key={v} selected={form.roofType===v} onClick={()=>set("roofType",v)} label={l} desc={d}/>)}</div></div>
         <div><Label>Cross-breeze potential</Label><div className="flex gap-3 mt-2">{[{v:true,label:"Yes"},{v:false,label:"No"}].map(({v,label})=><button key={label} type="button" className={`option-pill flex-1 ${form.hasCrossBreeze===v?"selected":""}`} onClick={()=>set("hasCrossBreeze",v)}>{label}</button>)}</div></div>
       </div>);
       case 3:return(<div className="fade-up space-y-4">

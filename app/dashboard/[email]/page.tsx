@@ -7,6 +7,7 @@ import type { OpenPeriod } from "@/lib/recommendation";
 import type { AiringWindow } from "@/lib/airing";
 import { conditionLine, airingLine, wholeHouseLine } from "@/lib/condition-line";
 import { ForecastStrip } from "@/app/components/ForecastStrip";
+import { DayTimeline } from "@/app/components/DayTimeline";
 
 interface WindowChip { size:string; direction:string; }
 interface Room {
@@ -19,9 +20,10 @@ interface TodayRec {
   shouldOpen:boolean; openPeriods:OpenPeriod[]; airingWindows:AiringWindow[]|null;
   reasoning:string; emailSent:boolean; highF?:number; lowF?:number; cityName?:string;
   airing?:AiringInfo;
-  bpRange?: { min:number; max:number; label:string };
+  bpRange?:  { min:number; max:number; label:string };
+  bpSlots?:  { hour:number; balancePt:number }[];
   forecastDays?:  { date:string; highF:number; lowF:number }[];
-  forecastSlots?: { date:string; hour:number; precipProb:number; tempF:number }[];
+  forecastSlots?: { date:string; hour:number; precipProb:number; tempF:number; humidity:number }[];
 }
 interface RoomState { room:Room; rec:TodayRec|null; loading:boolean; error:string; summary:string; notifEnabled:boolean; lastRefreshed:number|null; }
 
@@ -183,6 +185,18 @@ function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
                 {summary && <p style={{fontSize:13,color:rec.shouldOpen?"#1A8C3A":"var(--muted)",fontWeight:500}}>{condLine}</p>}
               </div>
             </div>
+
+            {/* ── Day timeline ── */}
+            {(rec.bpSlots?.length ?? 0) > 0 && (
+              <DayTimeline
+                slots={(rec.forecastSlots??[]).filter(s=>s.date===today)}
+                openPeriods={rec.openPeriods}
+                airingWindows={rec.airing?.windows??[]}
+                bpSlots={rec.bpSlots??[]}
+                today={today}
+                nowHour={hour}
+              />
+            )}
 
             {/* Air quality — always show if room has occupied hours */}
             {needsAiring && (
@@ -351,6 +365,7 @@ export default function DashboardPage() {
             ...getData.recommendation,
             airing:        getData.airing,
             bpRange:       getData.bpRange,
+            bpSlots:       getData.bpSlots,
             highF,
             lowF,
             cityName:      getData.forecast?.cityName,
@@ -377,6 +392,7 @@ export default function DashboardPage() {
         cityName:      postData.forecast?.cityName,
         airing:        postData.airing,
         bpRange:       postData.bpRange,
+        bpSlots:       postData.bpSlots,
         forecastDays:  postData.forecast?.days,
         forecastSlots: postData.forecast?.slots,
       };
@@ -530,9 +546,9 @@ export default function DashboardPage() {
             if (!first?.rec?.forecastDays) return null;
             return (
               <ForecastStrip
-                days={first.rec.forecastDays}
                 slots={first.rec.forecastSlots ?? []}
                 today={todayDate()}
+                nowHour={nowHour()}
               />
             );
           })()}
@@ -558,6 +574,46 @@ export default function DashboardPage() {
             />
           ))}
         </div>
+
+        {/* ── Page legend ── */}
+        {roomStates.some(s=>s.rec?.bpSlots?.length) && (
+          <div style={{
+            marginTop:24, padding:"14px 18px",
+            borderRadius:"var(--radius-md)",
+            background:"var(--white)", border:"0.5px solid var(--border)",
+          }}>
+            <p style={{fontSize:11,fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>Timeline key</p>
+            <div style={{display:"flex",flexWrap:"wrap",gap:"10px 20px"}}>
+              {[
+                { color:"#93C5FD", label:"Cool (below balance point)" },
+                { color:"#A7F3D0", label:"Near balance point" },
+                { color:"#FCD34D", label:"Warm (above balance point)" },
+                { color:"#F87171", label:"Hot" },
+              ].map(({color,label})=>(
+                <div key={label} style={{display:"flex",alignItems:"center",gap:6}}>
+                  <div style={{width:14,height:10,borderRadius:3,background:color,flexShrink:0}}/>
+                  <span style={{fontSize:12,color:"var(--muted)"}}>{label}</span>
+                </div>
+              ))}
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <div style={{width:8,height:8,borderRadius:"50%",background:"#16A34A",border:"1.5px solid white",boxShadow:"0 1px 3px rgba(0,0,0,0.2)",flexShrink:0}}/>
+                <span style={{fontSize:12,color:"var(--muted)"}}>Open window</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <div style={{width:8,height:8,borderRadius:"50%",background:"#DC2626",border:"1.5px solid white",boxShadow:"0 1px 3px rgba(0,0,0,0.2)",flexShrink:0}}/>
+                <span style={{fontSize:12,color:"var(--muted)"}}>Close window</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <div style={{width:8,height:8,borderRadius:"50%",background:"#1D4ED8",border:"1.5px solid white",boxShadow:"0 1px 3px rgba(0,0,0,0.2)",flexShrink:0}}/>
+                <span style={{fontSize:12,color:"var(--muted)"}}>Air out room (CO₂)</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <div style={{width:2,height:14,borderRadius:1,background:"rgba(0,0,0,0.35)",flexShrink:0}}/>
+                <span style={{fontSize:12,color:"var(--muted)"}}>Current hour</span>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

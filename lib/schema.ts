@@ -9,6 +9,8 @@ export type Orientation      = "NS" | "EW";
 export type OccupancyLevel   = "EMPTY" | "ONE_TWO" | "THREE_FOUR";
 export type HeatSourceLevel  = "MINIMAL" | "LIGHT_ELECTRONICS" | "HOME_OFFICE" | "KITCHEN_LAUNDRY";
 export type FeedbackType     = "TOO_HOT" | "TOO_COLD";
+export type SurfaceColor     = "LIGHT" | "MEDIUM" | "DARK";
+export type RoofType         = "ATTIC_BUFFERED" | "FLAT_VAULTED" | "DIRECT_EXPOSED";
 
 /**
  * A block of time when the room is NOT occupied.
@@ -67,8 +69,13 @@ export const rooms = sqliteTable("rooms", {
   balancePoint:          real("balance_point"),
   comfortBias:           real("comfort_bias").notNull().default(0),
   notificationsEnabled:  integer("notifications_enabled", { mode: "boolean" }).notNull().default(false),
-  lastNotifiedOpen:      text("last_notified_open"),   // ISO timestamp of last "open" notification
-  lastNotifiedClose:     text("last_notified_close"),  // ISO timestamp of last "close" notification
+  lastNotifiedOpen:      text("last_notified_open"),
+  lastNotifiedClose:     text("last_notified_close"),
+
+  // Solar & envelope
+  wallColor:   text("wall_color").$type<SurfaceColor>().notNull().default("MEDIUM"),
+  roofColor:   text("roof_color").$type<SurfaceColor>().notNull().default("MEDIUM"),
+  roofType:    text("roof_type").$type<RoofType>().notNull().default("ATTIC_BUFFERED"),
 });
 
 // ── windows ───────────────────────────────────────────────────────────────────

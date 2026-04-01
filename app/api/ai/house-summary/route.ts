@@ -7,31 +7,27 @@ export async function POST(req: NextRequest) {
   const closedRooms = (rooms as {name:string;shouldOpen:boolean}[]).filter(r => !r.shouldOpen);
   const total       = rooms.length;
 
-  const prompt = `Write ONE short practical sentence (max 18 words) as a whole-house ventilation recommendation.
+  const prompt = `Write ONE short practical sentence (max 14 words) telling someone what to do with their windows today. This is a direct instruction, not a summary.
 
-Today in ${cityName}: High ${highF}°F, Low ${lowF}°F
-${openRooms.length} of ${total} rooms have good conditions: ${openRooms.map((r:{name:string}) => r.name).join(", ") || "none"}
-${closedRooms.length > 0 ? `Keep closed: ${closedRooms.map((r:{name:string}) => r.name).join(", ")}` : ""}
+${openRooms.length} of ${total} rooms have good conditions: ${openRooms.map((r:{name:string})=>r.name).join(", ")||"none"}
+${closedRooms.length>0?`Keep closed: ${closedRooms.map((r:{name:string})=>r.name).join(", ")}`: ""}
+${cityName} — High ${highF}°F, Low ${lowF}°F
 
 RULES:
-- This is a practical instruction about opening or closing windows/vents — not a weather report
-- Never mention specific temperatures unless describing conditions simply (e.g. "cool tonight")
-- Never confuse forecast high/low with balance point temperatures
-- Focus on the action: open, keep closed, mixed
-
-Good examples:
-- "Good conditions across the house tonight from 5 PM."
-- "Keep everything closed today — too warm outside."
-- "Open the bedroom but keep the living room closed."
-- "Mixed day — good conditions in 2 of 3 rooms from this afternoon."
+- One direct instruction only — not a summary, not "conditions suggest"
+- Name specific rooms if they differ, otherwise say "whole house" or "everything"
+- Good examples:
+  "Keep everything closed today — it's too warm outside."
+  "Open the bedroom tonight from 11 PM, keep The Lair closed."
+  "Good conditions across the house tonight from 9 PM."
 
 Write only the sentence.`;
 
   try {
-    const res  = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type":"application/json", "x-api-key":process.env.ANTHROPIC_API_KEY??"", "anthropic-version":"2023-06-01" },
-      body: JSON.stringify({ model:"claude-haiku-4-5-20251001", max_tokens:60, messages:[{role:"user",content:prompt}] }),
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{"Content-Type":"application/json","x-api-key":process.env.ANTHROPIC_API_KEY??"","anthropic-version":"2023-06-01"},
+      body: JSON.stringify({ model:"claude-haiku-4-5-20251001", max_tokens:50, messages:[{role:"user",content:prompt}] }),
     });
     const data = await res.json();
     return NextResponse.json({ text: data.content?.[0]?.text?.trim() ?? "" });

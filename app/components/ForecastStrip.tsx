@@ -1,139 +1,125 @@
 "use client";
-import type { DayForecast } from "@/lib/weather";
 
-interface ForecastDay {
-  date:    string;
-  highF:   number;
-  lowF:    number;
+interface SlotData {
+  date:       string;
+  hour:       number;
+  tempF:      number;
+  precipProb: number;
+  humidity:   number;
 }
 
-interface RainPeriod {
-  startHour: number;
-  endHour:   number;
-  maxProb:   number;
+interface Props {
+  slots:  SlotData[];
+  today:  string;
+  nowHour: number;
 }
 
 function fmt12h(h: number): string {
   if (h === 0)  return "12 AM";
   if (h === 12) return "12 PM";
-  return h < 12 ? `${h} AM` : `${h-12} PM`;
+  return h < 12 ? `${h} AM` : `${h - 12} PM`;
 }
 
-function dayLabel(dateStr: string, todayStr: string): string {
-  const today  = new Date(todayStr + "T12:00:00Z");
-  const target = new Date(dateStr  + "T12:00:00Z");
-  const diff   = Math.round((target.getTime() - today.getTime()) / 86400000);
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Tomorrow";
-  return target.toLocaleDateString("en-US", { weekday:"short" });
+// Get the next 24 hours of slots rolling from nowHour
+function getNext24(slots: SlotData[], today: string, nowHour: number): SlotData[] {
+  const sorted = [...slots].sort((a, b) => {
+    const aTs = a.date === today ? a.hour : a.hour + 24;
+    const bTs = b.date === today ? b.hour : b.hour + 24;
+    return aTs - bTs;
+  });
+  // Start from nowHour
+  const startIdx = sorted.findIndex(s => s.date === today && s.hour >= nowHour);
+  const from = startIdx >= 0 ? sorted.slice(startIdx) : sorted;
+  return from.slice(0, 24);
 }
 
-function getRainPeriods(slots: { hour:number; precipProb:number }[]): RainPeriod[] {
-  const RAIN_THRESHOLD = 0.4;
-  const periods: RainPeriod[] = [];
-  let inRain = false;
-  let start = 0, maxProb = 0;
-
-  for (const slot of slots) {
-    if (slot.precipProb >= RAIN_THRESHOLD) {
-      if (!inRain) { inRain = true; start = slot.hour; maxProb = slot.precipProb; }
-      else maxProb = Math.max(maxProb, slot.precipProb);
-    } else if (inRain) {
-      periods.push({ startHour:start, endHour:slot.hour, maxProb });
-      inRain = false; maxProb = 0;
-    }
-  }
-  if (inRain) periods.push({ startHour:start, endHour:24, maxProb });
-  return periods;
+function tempColor(tempF: number): string {
+  if (tempF <= 40) return "#93C5FD";   // cold — blue
+  if (tempF <= 55) return "#6EE7B7";   // cool — teal
+  if (tempF <= 68) return "#A7F3D0";   // comfortable — sage
+  if (tempF <= 78) return "#FDE68A";   // warm — amber
+  if (tempF <= 88) return "#FCA5A5";   // hot — light red
+  return "#F87171";                     // very hot — red
 }
 
-interface Props {
-  days:  ForecastDay[];
-  slots: { date:string; hour:number; precipProb:number; tempF:number }[];
-  today: string;
-}
+export function ForecastStrip({ slots, today, nowHour }: Props) {
+  const next24 = getNext24(slots, today, nowHour);
+  if (!next24.length) return null;
 
-export function ForecastStrip({ days, slots, today }: Props) {
-  if (!days.length) return null;
-
-  // Today's rain periods
-  const todaySlots = slots.filter(s => s.date === today);
-  const rainPeriods = getRainPeriods(todaySlots);
-
-  // Today's temp by hour for mini chart
-  const tempSlots = todaySlots.filter(s => s.tempF > 0);
-  const minTemp = Math.min(...tempSlots.map(s => s.tempF));
-  const maxTemp = Math.max(...tempSlots.map(s => s.tempF));
-  const tempRange = maxTemp - minTemp || 1;
+  const maxPrecip = Math.max(...next24.map(s => s.precipProb));
+  const hasPrecip = maxPrecip >= 0.3;
 
   return (
     <div className="card-raised" style={{ padding:"16px 20px", marginBottom:16 }}>
+      <p style={{ fontSize:11, fontWeight:600, color:"var(--muted)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:10 }}>
+        Next 24 hours
+      </p>
 
-      {/* 5-day row */}
-      <div style={{ display:"flex", gap:6, marginBottom:14 }}>
-        {days.slice(0, 5).map((d, i) => (
-          <div key={d.date} style={{
-            flex:1, textAlign:"center", padding:"8px 4px",
-            borderRadius:10,
-            background: i === 0 ? "var(--sky-light)" : "var(--bg-subtle)",
-            border: i === 0 ? "1px solid var(--sky-mid)" : "0.5px solid var(--border)",
-          }}>
-            <p style={{ fontSize:11, fontWeight:i===0?600:400, color:i===0?"var(--sky)":"var(--muted)", marginBottom:4 }}>
-              {dayLabel(d.date, today)}
-            </p>
-            <p style={{ fontSize:13, fontWeight:600, color:"var(--navy)", marginBottom:1 }}>
-              {d.highF.toFixed(0)}°
-            </p>
-            <p style={{ fontSize:11, color:"var(--muted)" }}>{d.lowF.toFixed(0)}°</p>
-          </div>
-        ))}
+      {/* Scrollable hour strip */}
+      <div style={{ overflowX:"auto", overflowY:"hidden", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", margin:"0 -20px", padding:"0 20px" }}>
+        <div style={{ display:"flex", gap:6, width:"max-content", paddingBottom:4 }}>
+          {next24.map((s, i) => {
+            const isNow = s.date === today && s.hour === nowHour;
+            return (
+              <div key={i} style={{
+                width:54, flexShrink:0, display:"flex", flexDirection:"column", alignItems:"center", gap:4,
+                padding:"8px 4px", borderRadius:10,
+                background: isNow ? "var(--sky-light)" : "var(--bg-subtle)",
+                border: isNow ? "1px solid var(--sky-mid)" : "0.5px solid var(--border)",
+              }}>
+                {/* Hour label */}
+                <span style={{ fontSize:10, fontWeight:isNow?700:400, color:isNow?"var(--sky)":"var(--muted-light)" }}>
+                  {isNow ? "Now" : fmt12h(s.hour)}
+                </span>
+
+                {/* Temp chip */}
+                <div style={{
+                  width:32, height:22, borderRadius:6,
+                  background:tempColor(s.tempF),
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                }}>
+                  <span style={{ fontSize:11, fontWeight:600, color:"rgba(0,0,0,0.7)" }}>{s.tempF.toFixed(0)}°</span>
+                </div>
+
+                {/* Humidity */}
+                <span style={{ fontSize:10, color:"var(--muted)" }}>{s.humidity}%</span>
+
+                {/* Precip prob */}
+                <div style={{ display:"flex", alignItems:"center", gap:2 }}>
+                  <span style={{ fontSize:9 }}>{s.precipProb >= 0.4 ? "🌧" : s.precipProb >= 0.2 ? "🌦" : "☀️"}</span>
+                  <span style={{ fontSize:10, color: s.precipProb >= 0.4 ? "#1D4ED8" : "var(--muted)" }}>
+                    {Math.round(s.precipProb * 100)}%
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Today's hourly temp bar */}
-      {tempSlots.length > 0 && (
-        <div style={{ marginBottom: rainPeriods.length ? 12 : 0 }}>
-          <p style={{ fontSize:11, color:"var(--muted)", marginBottom:6, fontWeight:500 }}>Today's temperature</p>
-          <div style={{ display:"flex", alignItems:"flex-end", gap:2, height:36 }}>
-            {tempSlots.map(s => {
-              const height = Math.max(4, Math.round(((s.tempF - minTemp) / tempRange) * 32));
-              const isRainy = s.precipProb >= 0.4;
-              return (
-                <div key={s.hour} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
-                  <div style={{
-                    width:"100%", height, borderRadius:2,
-                    background: isRainy ? "#93C5FD" : "var(--sky)",
-                    opacity: isRainy ? 0.6 : 0.85,
-                  }}/>
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ display:"flex", justifyContent:"space-between", marginTop:3 }}>
-            <span style={{ fontSize:10, color:"var(--muted-light)" }}>12 AM</span>
-            <span style={{ fontSize:10, color:"var(--muted-light)" }}>12 PM</span>
-            <span style={{ fontSize:10, color:"var(--muted-light)" }}>11 PM</span>
-          </div>
-        </div>
-      )}
-
-      {/* Rain periods — specific hours */}
-      {rainPeriods.length > 0 && (
-        <div style={{
-          padding:"8px 12px", borderRadius:8,
-          background:"#EFF6FF", border:"1px solid #BFDBFE",
-          display:"flex", alignItems:"center", gap:8,
-        }}>
-          <span style={{ fontSize:14 }}>🌧</span>
-          <div>
-            <p style={{ fontSize:12, fontWeight:600, color:"var(--navy)", marginBottom:1 }}>Rain expected today</p>
-            <p style={{ fontSize:11, color:"var(--muted)" }}>
-              {rainPeriods.map((r, i) => (
-                `${fmt12h(r.startHour)}–${fmt12h(r.endHour)} (${Math.round(r.maxProb*100)}% chance)`
-              )).join(" · ")}
+      {/* Rain alert if significant precip in next 24h */}
+      {hasPrecip && (() => {
+        const THRESHOLD = 0.4;
+        const rainSlots = next24.filter(s => s.precipProb >= THRESHOLD);
+        const firstRain = rainSlots[0];
+        const lastRain  = rainSlots[rainSlots.length - 1];
+        const maxProb   = Math.max(...rainSlots.map(s => s.precipProb));
+        const label = firstRain.date === today
+          ? fmt12h(firstRain.hour)
+          : `tomorrow ${fmt12h(firstRain.hour)}`;
+        return (
+          <div style={{
+            marginTop:10, padding:"8px 12px", borderRadius:8,
+            background:"#EFF6FF", border:"1px solid #BFDBFE",
+            display:"flex", alignItems:"center", gap:8,
+          }}>
+            <span style={{ fontSize:14 }}>🌧</span>
+            <p style={{ fontSize:12, color:"#1E3A5F" }}>
+              Rain from <strong>{label}</strong> to <strong>{fmt12h(lastRain.hour)}</strong> — up to <strong>{Math.round(maxProb * 100)}%</strong> chance
             </p>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

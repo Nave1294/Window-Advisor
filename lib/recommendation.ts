@@ -104,7 +104,7 @@ export function generateRecommendation(
     for (const slot of day.slots) {
       const dow      = new Date(slot.ts * 1000).getUTCDay();
       // Per-slot balance point accounts for time-of-day and day-of-week heat load
-      const slotBP  = balancePointForSlot(room as never, dow, slot.hour, bias);
+      const slotBP  = balancePointForSlot(room as never, dow, slot.hour, bias, slot.precipProb);
       const { score, blocked } = scoreSlot(slot, room, slotBP);
       allScored.push({ slot, date: day.date, score, open: score >= OPEN_THRESHOLD, blocked });
     }

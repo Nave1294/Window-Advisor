@@ -13,6 +13,8 @@ type Insulation  = "BELOW_CODE" | "AT_CODE" | "ABOVE_CODE";
 type Orientation = "NS" | "EW";
 type OccLevel    = "ONE_TWO" | "THREE_FOUR";
 type HeatSource  = "MINIMAL" | "LIGHT_ELECTRONICS" | "HOME_OFFICE" | "KITCHEN_LAUNDRY";
+type SurfaceColor = "LIGHT" | "MEDIUM" | "DARK";
+type RoofType    = "ATTIC_BUFFERED" | "FLAT_VAULTED" | "DIRECT_EXPOSED";
 
 interface WindowEntry { id:string; size:WindowSize; direction:Direction; glazingOverride?:GlazingType; }
 
@@ -21,6 +23,7 @@ interface FormData {
   roomName:string; floorNumber:number; isTopFloor:boolean|null;
   lengthFt:string; widthFt:string; ceilingHeightFt:string; orientation:Orientation|"";
   insulationLevel:Insulation|""; glazingType:GlazingType|""; hasCrossBreeze:boolean|null;
+  wallColor:SurfaceColor; roofColor:SurfaceColor; roofType:RoofType|"";
   windows:WindowEntry[]; exteriorWalls:Direction[];
   occupancyLevel:OccLevel;
   unoccupiedBlocks:UnoccupiedBlock[];
@@ -116,6 +119,7 @@ export default function SetupPageInner() {
     roomName:"", floorNumber:1, isTopFloor:null,
     lengthFt:"", widthFt:"", ceilingHeightFt:"", orientation:"",
     insulationLevel:"", glazingType:"", hasCrossBreeze:null,
+    wallColor:"MEDIUM", roofColor:"MEDIUM", roofType:"",
     windows:[], exteriorWalls:[],
     occupancyLevel:"ONE_TWO",
     unoccupiedBlocks:[],
@@ -152,6 +156,7 @@ export default function SetupPageInner() {
         if (!form.insulationLevel) return "Select an insulation level.";
         if (!form.glazingType) return "Select a glazing type.";
         if (form.hasCrossBreeze===null) return "Indicate cross-breeze potential.";
+        if (!form.roofType) return "Select a roof type.";
         break;
       case 4: if (!form.windows.length) return "Add at least one window."; break;
       case 5: if (!form.exteriorWalls.length) return "Select at least one exterior wall."; break;
@@ -196,6 +201,7 @@ export default function SetupPageInner() {
           lengthFt:parseFloat(form.lengthFt), widthFt:parseFloat(form.widthFt), ceilingHeightFt:parseFloat(form.ceilingHeightFt),
           orientation:form.orientation, insulationLevel:form.insulationLevel,
           glazingType:form.glazingType, hasCrossBreeze:form.hasCrossBreeze,
+          wallColor:form.wallColor, roofColor:form.roofColor, roofType:form.roofType,
           occupancyLevel:form.occupancyLevel,
           unoccupiedBlocks:form.unoccupiedBlocks,
           heatSourceLevel:form.heatSourceLevel,
@@ -272,6 +278,34 @@ export default function SetupPageInner() {
         <div className="fade-up space-y-7">
           <div><Label>Wall insulation</Label><div className="space-y-2 mt-2">{INSULATION_OPTS.map(o=><RadioCard key={o.value} selected={form.insulationLevel===o.value} onClick={()=>set("insulationLevel",o.value)} label={o.label} desc={o.desc}/>)}</div></div>
           <div><Label>Window glazing</Label><div className="space-y-2 mt-2">{GLAZING_OPTS.map(o=><RadioCard key={o.value} selected={form.glazingType===o.value} onClick={()=>set("glazingType",o.value)} label={o.label} badge={o.u}/>)}</div></div>
+          <div>
+            <Label hint="Lighter surfaces absorb less solar heat">Exterior wall color</Label>
+            <div className="flex gap-3 mt-2">
+              {([["LIGHT","Light"],["MEDIUM","Medium"],["DARK","Dark"]] as [SurfaceColor,string][]).map(([v,label])=>(
+                <button key={v} type="button" className={`option-pill flex-1 ${form.wallColor===v?"selected":""}`} onClick={()=>set("wallColor",v)}>{label}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <Label hint="Dark roofs absorb significantly more solar heat">Exterior roof color</Label>
+            <div className="flex gap-3 mt-2">
+              {([["LIGHT","Light"],["MEDIUM","Medium"],["DARK","Dark"]] as [SurfaceColor,string][]).map(([v,label])=>(
+                <button key={v} type="button" className={`option-pill flex-1 ${form.roofColor===v?"selected":""}`} onClick={()=>set("roofColor",v)}>{label}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <Label hint="Attic space buffers heat transfer; flat/vaulted ceilings conduct more directly">Roof type</Label>
+            <div className="space-y-2 mt-2">
+              {([
+                ["ATTIC_BUFFERED","Attic (buffered)","Air gap above ceiling reduces heat transfer"],
+                ["FLAT_VAULTED","Flat or vaulted","Ceiling is directly below roof deck"],
+                ["DIRECT_EXPOSED","Directly exposed","No insulating layer between ceiling and outdoors"],
+              ] as [RoofType,string,string][]).map(([v,label,desc])=>(
+                <RadioCard key={v} selected={form.roofType===v} onClick={()=>set("roofType",v)} label={label} desc={desc}/>
+              ))}
+            </div>
+          </div>
           <div>
             <Label>Cross-breeze potential</Label>
             <div className="flex gap-3 mt-2">
@@ -386,7 +420,14 @@ export default function SetupPageInner() {
           {[
             { heading:"Your Details", items:[{label:"Email",value:form.email},{label:"ZIP",value:form.zipCode}] },
             { heading:"Room", items:[{label:"Name",value:form.roomName},{label:"Floor",value:`Floor ${form.floorNumber}${form.isTopFloor?" (top)":""}`},{label:"Size",value:`${form.lengthFt}×${form.widthFt} ft, ${form.ceilingHeightFt} ft ceiling`},{label:"Orientation",value:form.orientation==="NS"?"N–S":"E–W"}] },
-            { heading:"Envelope", items:[{label:"Insulation",value:INSULATION_OPTS.find(o=>o.value===form.insulationLevel)?.label??""},{label:"Glazing",value:GLAZING_OPTS.find(o=>o.value===form.glazingType)?.label??""},{label:"Cross-breeze",value:form.hasCrossBreeze?"Yes":"No"}] },
+            { heading:"Envelope", items:[
+                {label:"Insulation",value:INSULATION_OPTS.find(o=>o.value===form.insulationLevel)?.label??""},
+                {label:"Glazing",value:GLAZING_OPTS.find(o=>o.value===form.glazingType)?.label??""},
+                {label:"Exterior wall color",value:form.wallColor.charAt(0)+form.wallColor.slice(1).toLowerCase()},
+                {label:"Exterior roof color",value:form.roofColor.charAt(0)+form.roofColor.slice(1).toLowerCase()},
+                {label:"Roof type",value:form.roofType==="ATTIC_BUFFERED"?"Attic (buffered)":form.roofType==="FLAT_VAULTED"?"Flat or vaulted":"Directly exposed"},
+                {label:"Cross-breeze",value:form.hasCrossBreeze?"Yes":"No"},
+            ] },
             { heading:"Occupancy", items:[{label:"Headcount",value:form.occupancyLevel==="THREE_FOUR"?"3–4 people":"1–2 people"},{label:"Unoccupied blocks",value:form.unoccupiedBlocks.length>0?`${form.unoccupiedBlocks.length} block${form.unoccupiedBlocks.length>1?"s":""}  defined`:"None (always occupied)"},{label:"Heat sources",value:HEAT_OPTS.find(o=>o.value===form.heatSourceLevel)?.label??""}] },
             { heading:"Comfort", items:[{label:"Temperature",value:`${form.minTempF}°–${form.maxTempF}°F`},{label:"Humidity",value:`${form.minHumidity}%–${form.maxHumidity}%`}] },
           ].map(s=>(

@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { users, rooms, windows, exteriorWalls } from "@/lib/schema";
 import { eq } from "drizzle-orm";
-import type { InsulationLevel, Direction, WindowSize, GlazingType, Orientation, OccupancyLevel, HeatSourceLevel, UnoccupiedBlock, RoomFull } from "@/lib/schema";
+import type { InsulationLevel, Direction, WindowSize, GlazingType, Orientation, OccupancyLevel, HeatSourceLevel, UnoccupiedBlock, RoomFull, SurfaceColor, RoofType } from "@/lib/schema";
 
 interface SetupPayload {
   email:string; zipCode:string; roomName:string;
@@ -12,6 +12,7 @@ interface SetupPayload {
   lengthFt:number; widthFt:number; ceilingHeightFt:number;
   orientation:Orientation; insulationLevel:InsulationLevel;
   glazingType:GlazingType; hasCrossBreeze:boolean;
+  wallColor:SurfaceColor; roofColor:SurfaceColor; roofType:RoofType;
   occupancyLevel:OccupancyLevel; unoccupiedBlocks:UnoccupiedBlock[];
   heatSourceLevel:HeatSourceLevel;
   windows:{size:WindowSize;direction:Direction;glazingOverride?:GlazingType}[];
@@ -28,6 +29,7 @@ export async function POST(req: NextRequest) {
     email, zipCode, roomName, floorNumber, isTopFloor,
     lengthFt, widthFt, ceilingHeightFt,
     orientation, insulationLevel, glazingType, hasCrossBreeze,
+    wallColor, roofColor, roofType,
     occupancyLevel, unoccupiedBlocks, heatSourceLevel,
     windows: windowList, exteriorWalls: wallList,
     minTempF, maxTempF, minHumidity, maxHumidity,
@@ -63,6 +65,7 @@ export async function POST(req: NextRequest) {
       lengthFt, widthFt, ceilingHeightFt,
       orientation:orientation??"NS", insulationLevel,
       glazingType:glazingType??"DOUBLE", hasCrossBreeze,
+      wallColor:wallColor??"MEDIUM", roofColor:roofColor??"MEDIUM", roofType:roofType??"ATTIC_BUFFERED",
       occupancyLevel:occupancyLevel??"ONE_TWO",
       unoccupiedBlocks:JSON.stringify(unoccupiedBlocks??[]),
       heatSourceLevel:heatSourceLevel??"LIGHT_ELECTRONICS",

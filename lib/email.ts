@@ -163,7 +163,11 @@ function dailyHtml(email: string, date: string, digests: RoomDigest[]): string {
   <tr><td style="background:#F8FAFC;padding:24px 28px;border-radius:0 0 12px 12px;border:1px solid #E2E8F0;border-top:none;">
     ${digests.map(r => roomBlock(r, date)).join("")}
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid #E2E8F0;text-align:center;">
-      <p style="font-size:12px;color:#94A3B8;margin:0 0 4px;">Sent to ${email} · "Too warm" or "Too cold" adjusts future recommendations.</p>
+      <a href="${appUrl()}/dashboard/${encodeURIComponent(email)}"
+         style="display:inline-block;padding:11px 26px;background:#0071E3;color:white;border-radius:10px;font-size:14px;font-weight:600;text-decoration:none;margin-bottom:14px;">
+        View dashboard →
+      </a>
+      <p style="font-size:12px;color:#94A3B8;margin:0;">"Too warm" or "Too cold" buttons adjust future recommendations.</p>
     </div>
   </td></tr>
 </table></td></tr></table>
@@ -243,6 +247,8 @@ export async function sendConfirmationEmail(opts: {
 }): Promise<SendResult> {
   const { to, roomName, floorNumber, balancePoint, minTempF, maxTempF, minHumidity, maxHumidity, cityName } = opts;
 
+  const dashUrl = `${appUrl()}/dashboard/${encodeURIComponent(to)}`;
+
   const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <title>Room added — Window Advisor</title></head>
 <body style="margin:0;padding:0;background:#F7F3EC;font-family:'Helvetica Neue',Arial,sans-serif;">
@@ -260,9 +266,27 @@ export async function sendConfirmationEmail(opts: {
       <tr><td style="padding:12px 16px;border-bottom:1px solid #F1F5F9;font-size:13px;color:#64748B;">Temperature target</td><td style="padding:12px 16px;border-bottom:1px solid #F1F5F9;font-size:14px;font-weight:600;color:#1A2B3C;text-align:right;">${minTempF}° – ${maxTempF}°F</td></tr>
       <tr><td style="padding:12px 16px;font-size:13px;color:#64748B;">Humidity target</td><td style="padding:12px 16px;font-size:14px;font-weight:600;color:#1A2B3C;text-align:right;">${minHumidity}% – ${maxHumidity}%</td></tr>
     </table>
-    <p style="font-size:13px;color:#64748B;margin:20px 0 0;line-height:1.6;">
+
+    <p style="font-size:13px;color:#64748B;margin:20px 0 16px;line-height:1.6;">
       Your first daily recommendation arrives tomorrow at 7 AM Eastern. Each email includes temperature-based open/close windows and CO₂ airing reminders timed to your occupancy schedule.
     </p>
+
+    <div style="text-align:center;margin-bottom:24px;">
+      <a href="${dashUrl}" style="display:inline-block;padding:12px 28px;background:#0071E3;color:white;border-radius:10px;font-size:15px;font-weight:600;text-decoration:none;letter-spacing:-0.01em;">
+        View your dashboard →
+      </a>
+    </div>
+
+    <div style="background:#F8FAFC;border-radius:10px;padding:18px;border:1px solid #E2E8F0;">
+      <p style="font-size:13px;font-weight:600;color:#1A2B3C;margin:0 0 10px;">📱 Add to your iPhone Home Screen</p>
+      <ol style="font-size:12px;color:#64748B;margin:0;padding-left:18px;line-height:2;">
+        <li>Open your dashboard in <strong>Safari</strong> on your iPhone</li>
+        <li>Tap the <strong>Share</strong> button (box with arrow at the bottom)</li>
+        <li>Scroll down and tap <strong>"Add to Home Screen"</strong></li>
+        <li>Tap <strong>Add</strong> — Window Advisor will appear as an app icon</li>
+      </ol>
+      <p style="font-size:11px;color:#94A3B8;margin:10px 0 0;">Your dashboard URL: <a href="${dashUrl}" style="color:#0071E3;">${dashUrl}</a></p>
+    </div>
   </td></tr>
 </table></td></tr></table>
 </body></html>`;
@@ -270,7 +294,9 @@ export async function sendConfirmationEmail(opts: {
   const text = `Window Advisor — Room Added\n\n${roomName} (Floor ${floorNumber}) has been set up.\n` +
     (balancePoint != null ? `Balance point: ${balancePoint.toFixed(1)}°F\n` : "") +
     `Temperature target: ${minTempF}°–${maxTempF}°F\nHumidity target: ${minHumidity}%–${maxHumidity}%\n\n` +
-    `Your first daily recommendation arrives tomorrow at 7 AM Eastern.`;
+    `Your first daily recommendation arrives tomorrow at 7 AM Eastern.\n\n` +
+    `View your dashboard: ${dashUrl}\n\n` +
+    `Add to iPhone Home Screen: Open the dashboard in Safari, tap Share, then "Add to Home Screen".`;
 
   try {
     const { data, error } = await client().emails.send({

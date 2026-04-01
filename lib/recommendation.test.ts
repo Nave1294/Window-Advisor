@@ -14,7 +14,7 @@ function makeRoom(overrides: Partial<Room & { exteriorWalls: { direction: string
     heatSourceLevel:"LIGHT_ELECTRONICS" as const,
     minTempF:68,maxTempF:74,minHumidity:40,maxHumidity:55,
     balancePoint:41,comfortBias:0,
-    notificationsEnabled:false,lastNotifiedOpen:null,lastNotifiedClose:null,
+    notificationsEnabled:false,lastNotifiedOpen:null,lastNotifiedClose:null,wallColor:"MEDIUM" as const,roofColor:"MEDIUM" as const,roofType:"ATTIC_BUFFERED" as const,
     exteriorWalls:[{direction:"S"}],
     ...overrides,
   };

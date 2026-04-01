@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { rooms, windows, exteriorWalls, users } from "@/lib/schema";
 import { eq } from "drizzle-orm";
-import type { InsulationLevel, Direction, WindowSize, GlazingType, Orientation, OccupancyLevel, HeatSourceLevel } from "@/lib/schema";
+import type { InsulationLevel, Direction, WindowSize, GlazingType, Orientation, OccupancyLevel, HeatSourceLevel, SurfaceColor, RoofType } from "@/lib/schema";
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -24,6 +24,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     lengthFt:number; widthFt:number; ceilingHeightFt:number;
     orientation:Orientation; insulationLevel:InsulationLevel;
     glazingType:GlazingType; hasCrossBreeze:boolean;
+    wallColor:SurfaceColor; roofColor:SurfaceColor; roofType:RoofType;
     occupancyLevel:OccupancyLevel;
     unoccupiedBlocks:unknown[];
     heatSourceLevel:HeatSourceLevel;
@@ -45,6 +46,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     insulationLevel: body.insulationLevel,
     glazingType:     body.glazingType,
     hasCrossBreeze:  body.hasCrossBreeze,
+    wallColor:       body.wallColor  ?? "MEDIUM",
+    roofColor:       body.roofColor  ?? "MEDIUM",
+    roofType:        body.roofType   ?? "ATTIC_BUFFERED",
     occupancyLevel:  body.occupancyLevel,
     unoccupiedBlocks:JSON.stringify(body.unoccupiedBlocks ?? []),
     heatSourceLevel: body.heatSourceLevel,
