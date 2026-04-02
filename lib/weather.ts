@@ -118,7 +118,7 @@ export function degToCardinal(deg: number): string {
 
 export async function resolveZip(zip: string): Promise<{ lat: number; lon: number; city: string }> {
   const url = `${BASE}/geo/1.0/zip?zip=${zip},US&appid=${key()}`;
-  const res  = await fetch(url, { next: { revalidate: 86400 } }); // cache 24h
+  const res  = await fetch(url, { next: { revalidate: 86400 } }); // cache 24h — coords don't change
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Geo lookup failed for ZIP ${zip}: ${res.status} ${text}`);
@@ -131,11 +131,12 @@ export async function resolveZip(zip: string): Promise<{ lat: number; lon: numbe
 
 export async function fetchForecast(zip: string): Promise<WeatherForecast> {
   // Step 1: resolve ZIP to coordinates + city name
+  // Cache geo lookup for 24h — city coordinates don't change
   const { lat, lon, city } = await resolveZip(zip);
 
-  // Step 2: fetch 5-day / 3-hour forecast
+  // Step 2: fetch 5-day / 3-hour forecast — always fresh
   const url = `${BASE}/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${key()}`;
-  const res  = await fetch(url, { next: { revalidate: 3600 } }); // cache 1h
+  const res  = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Forecast fetch failed: ${res.status} ${text}`);
@@ -156,7 +157,6 @@ export async function fetchForecast(zip: string): Promise<WeatherForecast> {
     // Local wall-clock time via timezone offset
     const localTs   = slot.dt + tzOffsetSec;
     const localDate = new Date(localTs * 1000);
-    // Format as YYYY-MM-DD using UTC methods (since we already applied offset)
     const dateStr   = localDate.toISOString().slice(0, 10);
     const hour      = localDate.getUTCHours();
 
@@ -177,25 +177,33 @@ export async function fetchForecast(zip: string): Promise<WeatherForecast> {
     byDate.get(dateStr)!.push(normalised);
   }
 
-  // Step 4: build DayForecast for each date, sorted chronologically
+  // Step 4: build DayForecast — sort slots by ts (not hour) to handle midnight edge cases
   const days: DayForecast[] = Array.from(byDate.entries())
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, slots]) => {
-      const temps   = slots.map(s => s.tempF);
+      const sorted = slots.sort((a, b) => a.ts - b.ts);
+      const temps  = sorted.map(s => s.tempF);
       return {
         date,
-        slots:          slots.sort((a, b) => a.hour - b.hour),
-        highF:          Math.max(...temps),
-        lowF:           Math.min(...temps),
-        maxHumidity:    Math.max(...slots.map(s => s.humidity)),
-        maxPrecipProb:  Math.max(...slots.map(s => s.precipProb)),
-        maxWindMph:     Math.max(...slots.map(s => s.windSpeedMph)),
+        slots:         sorted,
+        highF:         Math.max(...temps),
+        lowF:          Math.min(...temps),
+        maxHumidity:   Math.max(...sorted.map(s => s.humidity)),
+        maxPrecipProb: Math.max(...sorted.map(s => s.precipProb)),
+        maxWindMph:    Math.max(...sorted.map(s => s.windSpeedMph)),
       };
     });
 
+  // Step 5: ensure days[0] is actually today in the local timezone
+  // (the cron may run at 7 AM Eastern but UTC is already the next day in some zones)
+  const todayLocal = new Date(Date.now() + tzOffsetSec * 1000)
+    .toISOString().slice(0, 10);
+  const todayIdx = days.findIndex(d => d.date === todayLocal);
+  const orderedDays = todayIdx > 0 ? days.slice(todayIdx) : days;
+
   return {
     cityName:  city,
-    days,
+    days:      orderedDays,
     fetchedAt: new Date().toISOString(),
   };
 }

@@ -97,9 +97,8 @@ export interface WallInput {
 
 /**
  * Returns total solar gain through all exterior walls (BTU/hr) for a given hour.
- * Uses sol-air temperature approximation: absorbed solar raises surface temp,
- * some of which conducts through the wall. We use a 15% conduction fraction
- * as a simplified thermal lag approximation.
+ * Uses a conservative conduction fraction — most absorbed solar heats the exterior
+ * surface and re-radiates; only a small fraction conducts through the assembly.
  */
 export function wallSolarGain(
   walls:      WallInput[],
@@ -109,7 +108,8 @@ export function wallSolarGain(
   const irr = hourlyIrradiance(hour, precipProb);
   if (irr === 0) return 0;
 
-  const WALL_CONDUCTION_FRACTION = 0.15;
+  // ~6% conduction fraction for a typical insulated wall assembly
+  const WALL_CONDUCTION_FRACTION = 0.06;
 
   return walls.reduce((sum, w) => {
     const orientFn = ORIENT_FACTOR[w.direction] ?? (() => 0);
@@ -138,9 +138,12 @@ export function roofSolarGain(
   const roofFactor = ORIENT_FACTOR.S(hour) * 0.9;
   const absorbed   = irr * roofFactor * ABSORPTIVITY[roofColor] * floorAreaSqFt;
 
-  const attenuation = roofType === "ATTIC_BUFFERED"   ? 0.35
-                    : roofType === "FLAT_VAULTED"      ? 0.70
-                    : /* DIRECT_EXPOSED */               0.90;
+  // Realistic roof-to-room conduction fractions
+  // Most absorbed solar heats the roof deck and re-radiates or vents; only a small
+  // fraction conducts through the assembly into the conditioned space.
+  const attenuation = roofType === "ATTIC_BUFFERED"   ? 0.06   // attic vents most; ~6% reaches room
+                    : roofType === "FLAT_VAULTED"      ? 0.12   // no attic buffer; ~12%
+                    : /* DIRECT_EXPOSED */               0.20;  // minimal assembly; ~20%
 
   return absorbed * attenuation;
 }

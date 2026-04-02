@@ -23,7 +23,7 @@ interface TodayRec {
   bpRange?:  { min:number; max:number; label:string };
   bpSlots?:  { hour:number; balancePt:number }[];
   forecastDays?:  { date:string; highF:number; lowF:number }[];
-  forecastSlots?: { date:string; hour:number; precipProb:number; tempF:number; humidity:number }[];
+  forecastSlots?: { date:string; hour:number; ts:number; precipProb:number; tempF:number; humidity:number }[];
 }
 interface RoomState { room:Room; rec:TodayRec|null; loading:boolean; error:string; summary:string; notifEnabled:boolean; lastRefreshed:number|null; }
 
@@ -198,51 +198,52 @@ function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
               />
             )}
 
-            {/* Air quality — always show if room has occupied hours */}
-            {needsAiring && (
-              <div style={{
-                display:"flex",alignItems:"flex-start",gap:12,padding:"12px 16px",
-                borderRadius:"var(--radius-md)",background:"var(--bg-subtle)",border:"0.5px solid var(--border-mid)",
-              }}>
-                <span style={{fontSize:20,flexShrink:0,marginTop:2}}>🌬</span>
-                <div style={{flex:1}}>
-                  <p style={{fontSize:14,color:"var(--navy)",marginBottom:6}}>Air quality</p>
-                  {(() => {
-                    const todayW = airingWindows.filter(w=>w.date===today);
-                    if (!todayW.length) return (
-                      <p style={{fontSize:13,color:"var(--muted)"}}>No occupied slots found today.</p>
-                    );
-                    // Show up to 3 options ranked by disruption
-                    const options = todayW.slice(0, 3);
-                    return (
-                      <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                        {options.map((w,i) => (
-                          <div key={i} style={{
-                            display:"flex",alignItems:"center",justifyContent:"space-between",
-                            padding:"7px 10px",borderRadius:8,
-                            background:i===0?"var(--white)":"transparent",
-                            border:i===0?"0.5px solid var(--border)":"none",
-                          }}>
-                            <div>
-                              <span style={{fontSize:13,fontWeight:i===0?600:400,color:"var(--navy)"}}>{w.label}</span>
-                              {i===0 && <span style={{fontSize:11,marginLeft:6,color:"var(--sky)"}}>Best option</span>}
-                            </div>
-                            <span style={{fontSize:11,padding:"2px 7px",borderRadius:10,fontWeight:500,
-                              background:w.disruption==="low"?"var(--sage-light)":w.disruption==="moderate"?"var(--amber-light)":"var(--error-light)",
-                              color:w.disruption==="low"?"#1A8C3A":w.disruption==="moderate"?"#B25C00":"var(--error)"}}>
-                              {w.disruption==="low"?"Low impact":w.disruption==="moderate"?"Moderate":"High impact"}
-                            </span>
+            {/* Air quality — always shown */}
+            <div style={{
+              display:"flex",alignItems:"flex-start",gap:12,padding:"12px 16px",
+              borderRadius:"var(--radius-md)",background:"var(--bg-subtle)",border:"0.5px solid var(--border-mid)",
+            }}>
+              <span style={{fontSize:20,flexShrink:0,marginTop:2}}>🌬</span>
+              <div style={{flex:1}}>
+                <p style={{fontSize:14,color:"var(--navy)",marginBottom:6}}>Air quality</p>
+                {(() => {
+                  const todayW = airingWindows.filter(w=>w.date===today);
+                  if (!todayW.length) return (
+                    <p style={{fontSize:13,color:"var(--muted)"}}>
+                      {rec?.shouldOpen
+                        ? "Open windows provide natural ventilation today."
+                        : "Air out briefly when outdoor conditions improve — check back this evening."}
+                    </p>
+                  );
+                  const options = todayW.slice(0, 3);
+                  return (
+                    <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                      {options.map((w,i) => (
+                        <div key={i} style={{
+                          display:"flex",alignItems:"center",justifyContent:"space-between",
+                          padding:"7px 10px",borderRadius:8,
+                          background:i===0?"var(--white)":"transparent",
+                          border:i===0?"0.5px solid var(--border)":"none",
+                        }}>
+                          <div>
+                            <span style={{fontSize:13,fontWeight:i===0?600:400,color:"var(--navy)"}}>{w.label}</span>
+                            {i===0 && <span style={{fontSize:11,marginLeft:6,color:"var(--sky)"}}>Best option</span>}
                           </div>
-                        ))}
-                        {todayW[0].reason && (
-                          <p style={{fontSize:11,color:"var(--muted)",marginTop:2}}>{todayW[0].reason}</p>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
+                          <span style={{fontSize:11,padding:"2px 7px",borderRadius:10,fontWeight:500,
+                            background:w.disruption==="low"?"var(--sage-light)":w.disruption==="moderate"?"var(--amber-light)":"var(--error-light)",
+                            color:w.disruption==="low"?"#1A8C3A":w.disruption==="moderate"?"#B25C00":"var(--error)"}}>
+                            {w.disruption==="low"?"Low impact":w.disruption==="moderate"?"Moderate":"High impact"}
+                          </span>
+                        </div>
+                      ))}
+                      {todayW[0].reason && (
+                        <p style={{fontSize:11,color:"var(--muted)",marginTop:2}}>{todayW[0].reason}</p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
-            )}
+            </div>
 
             {/* Notification toggle */}
             <div style={{
@@ -408,16 +409,19 @@ export default function DashboardPage() {
     setRoomStates(prev => {
       const s = prev.find(x=>x.room.id===roomId);
       if (!s?.rec) return prev;
-      const today = todayDate();
-      // Only pass today's periods — prevents AI from narrating future days
+      const today   = todayDate();
+      const hour    = nowHour();
       const todayPeriods = s.rec.openPeriods.filter(p => !p.startDate || p.startDate === today);
+      // Pre-compute the deterministic condition line so the AI can't contradict it
+      const cLine = conditionLine(s.rec.shouldOpen, s.rec.openPeriods, today, hour);
       fetch("/api/ai/room-summary",{
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           roomName:s.room.name, shouldOpen:s.rec.shouldOpen, openPeriods:todayPeriods,
           reasoning:s.rec.reasoning, highF:s.rec.highF??70, lowF:s.rec.lowF??55,
-          balancePoint:s.room.balancePoint,
           bpRange:s.rec.bpRange ?? null,
+          nowHour: hour,
+          conditionLine: cLine,
         }),
       }).then(r=>r.json()).then(d=>{
         if(d.text) setRoomStates(p=>p.map(x=>x.room.id===roomId?{...x,summary:d.text}:x));
