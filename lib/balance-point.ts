@@ -88,9 +88,10 @@ function buildWallInputs(room: RoomFull): WallInput[] {
   return (room.exteriorWalls ?? []).map(wall => {
     const gross = wallGrossArea(wall.direction, room.lengthFt, room.widthFt, room.ceilingHeightFt, room.orientation as Orientation);
     return {
-      direction: wall.direction as import("./schema").Direction,
-      areaSqFt:  Math.max(0, gross - (winAreaByFace[wall.direction] ?? 0)),
-      color:     (room.wallColor ?? "MEDIUM") as import("./schema").SurfaceColor,
+      direction:       wall.direction as import("./schema").Direction,
+      areaSqFt:        Math.max(0, gross - (winAreaByFace[wall.direction] ?? 0)),
+      color:           (room.wallColor ?? "MEDIUM") as import("./schema").SurfaceColor,
+      insulationLevel: room.insulationLevel as import("./schema").InsulationLevel,
     };
   });
 }
@@ -170,6 +171,7 @@ export function balancePointForSlot(
     floorArea,
     (room.roofColor  ?? "MEDIUM") as import("./schema").SurfaceColor,
     (room.roofType   ?? "ATTIC_BUFFERED") as import("./schema").RoofType,
+    room.insulationLevel as import("./schema").InsulationLevel,
     hour, precipProb,
   );
 

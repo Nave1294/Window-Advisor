@@ -1,60 +1,124 @@
 /**
  * Solar Gain Engine
  * =================
- * Calculates solar heat gain through windows, walls, and roof for a given
- * hour of the day. Used by balance-point.ts to produce per-slot heat loads.
+ * Calculates solar heat gain through windows, walls, and roof.
  *
- * Simplified but physically grounded model:
- * - Solar irradiance varies by hour (sunrise→noon→sunset bell curve)
- * - Orientation factors scale for N/S/E/W surfaces
- * - SHGC by glazing type for windows
- * - Absorptivity by surface color for walls and roof
- * - Roof gain reduced by 60% when attic-buffered
- * - All gains zero at night or on heavily rainy slots
+ * Physics basis: ASHRAE Fundamentals — Sol-Air Temperature Method
+ * ==============================================================
+ * For opaque surfaces (walls, roof), absorbed solar energy raises the
+ * exterior surface temperature. The fraction that conducts INTO the
+ * building is governed by the assembly U-value, NOT a fixed percentage
+ * of absorbed energy.
+ *
+ * Correct formula (sol-air):
+ *   Q_surface = U_assembly × Area × (alpha × I × orient / ho)
+ *
+ * where:
+ *   U_assembly = thermal conductance of the wall/ceiling (BTU/hr·ft²·°F)
+ *   alpha      = surface absorptivity (0-1)
+ *   I          = incident irradiance (BTU/hr·ft²)
+ *   orient     = orientation factor (fraction of peak reaching that face)
+ *   ho         = exterior film coefficient (BTU/hr·ft²·°F)
+ *                  walls: 4.0  (vertical surface, standard wind)
+ *                  roofs: 2.5  (horizontal surface, lower convection)
+ *
+ * This correctly ties solar gain to insulation level — a better-insulated
+ * wall admits LESS solar heat for the same absorbed radiation, because
+ * its lower U-value resists conduction inward.
+ *
+ * Window solar gain uses the SHGC (Solar Heat Gain Coefficient), which
+ * already accounts for both direct transmission and absorbed-then-re-emitted
+ * heat. This is the standard approach and does not change.
  */
 
-import type { SurfaceColor, RoofType, GlazingType, Direction } from "./schema";
+import type { SurfaceColor, RoofType, GlazingType, Direction, InsulationLevel } from "./schema";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-// Peak clear-sky irradiance at noon (BTU/hr·ft²)
+/** Peak clear-sky irradiance at noon on a horizontal surface (BTU/hr·ft²) */
 const PEAK_IRRADIANCE = 250;
 
-// SHGC by glazing type — NFRC typical values
-// DOUBLE corrected from 0.40 (clear, old) to 0.27 (modern low-e)
+/** SHGC by glazing type — NFRC typical values */
 const SHGC: Record<GlazingType, number> = {
-  SINGLE: 0.86,   // single clear — no coating
-  DOUBLE: 0.27,   // double low-e — standard modern install
-  TRIPLE: 0.20,   // triple low-e — high performance
+  SINGLE: 0.86,   // single clear
+  DOUBLE: 0.27,   // double low-e (standard modern)
+  TRIPLE: 0.20,   // triple low-e
 };
 
-// Solar absorptivity by surface color
+/** Solar absorptivity by surface color */
 const ABSORPTIVITY: Record<SurfaceColor, number> = {
   LIGHT:  0.25,
   MEDIUM: 0.55,
   DARK:   0.85,
 };
 
-// Orientation multipliers: fraction of peak irradiance reaching each face
-// Averaged across summer/shoulder season conditions, 40°N latitude
+/**
+ * Exterior film coefficient (BTU/hr·ft²·°F)
+ * Walls (vertical): 4.0 — standard ASHRAE value with moderate wind
+ * Roofs (horizontal/low-slope): 2.5 — lower convection on flat surfaces
+ */
+const HO_WALL = 4.0;
+const HO_ROOF = 2.5;
+
+/**
+ * Wall U-values (BTU/hr·ft²·°F) — matches balance-point.ts
+ * Used to compute sol-air driven conduction correctly.
+ */
+const WALL_U: Record<InsulationLevel, number> = {
+  BELOW_CODE: 0.10,
+  AT_CODE:    0.065,
+  ABOVE_CODE: 0.040,
+};
+
+/**
+ * Ceiling U-values (BTU/hr·ft²·°F) — ASHRAE 90.1-2019 CZ4A
+ * BELOW_CODE: R-19 → U ≈ 0.052
+ * AT_CODE:    R-38 → U ≈ 0.026
+ * ABOVE_CODE: R-49+ → U ≈ 0.020
+ */
+const CEILING_U: Record<InsulationLevel, number> = {
+  BELOW_CODE: 0.052,
+  AT_CODE:    0.026,
+  ABOVE_CODE: 0.020,
+};
+
+/**
+ * Attic transmittance factors — fraction of absorbed roof solar that
+ * reaches the ceiling after attic buffering/ventilation.
+ * ATTIC_BUFFERED: well-ventilated attic dissipates ~60% → 40% reaches ceiling
+ * FLAT_VAULTED:   no attic buffer → 65% reaches ceiling assembly
+ * DIRECT_EXPOSED: minimal insulation/assembly → 90% reaches ceiling
+ */
+const ATTIC_FACTOR: Record<RoofType, number> = {
+  ATTIC_BUFFERED: 0.40,
+  FLAT_VAULTED:   0.65,
+  DIRECT_EXPOSED: 0.90,
+};
+
+// ── Orientation factors ────────────────────────────────────────────────────────
+
+/**
+ * Returns the fraction of peak horizontal irradiance incident on each face.
+ * Averaged for mid-latitude (40°N), shoulder/ventilation season (Mar–Oct).
+ */
 const ORIENT_FACTOR: Record<Direction, (hour: number) => number> = {
-  S: (h) => Math.max(0, Math.sin(((h - 6) / 12) * Math.PI)),           // south: broad midday peak
-  N: (_)  => 0.08,                                                       // north: minimal diffuse only
-  E: (h)  => Math.max(0, Math.sin(((h - 6) / 6)  * Math.PI)) * 0.85,   // east: morning peak
-  W: (h)  => Math.max(0, Math.sin(((h - 12) / 6) * Math.PI)) * 0.85,   // west: afternoon peak
+  S: (h) => Math.max(0, Math.sin(((h - 6) / 12) * Math.PI)),
+  N: (_)  => 0.08,
+  E: (h)  => Math.max(0, Math.sin(((h - 6) / 6)  * Math.PI)) * 0.85,
+  W: (h)  => Math.max(0, Math.sin(((h - 12) / 6) * Math.PI)) * 0.85,
 };
 
 // ── Irradiance at a given hour ────────────────────────────────────────────────
 
 /**
- * Returns clear-sky irradiance (BTU/hr·ft²) for the given hour.
- * Uses a simple bell curve from sunrise (6 AM) to sunset (8 PM).
+ * Clear-sky horizontal irradiance (BTU/hr·ft²) for the given hour.
+ * Bell curve from sunrise (~6 AM) to sunset (~8 PM).
+ * Attenuated by cloud cover / precipitation probability.
  */
 export function hourlyIrradiance(hour: number, precipProb: number): number {
-  if (hour < 6 || hour >= 20) return 0;  // nighttime
+  if (hour < 6 || hour >= 20) return 0;
 
-  // Cloud/rain attenuation
-  const cloudFactor = precipProb >= 0.7 ? 0.1
+  const cloudFactor = precipProb >= 0.7 ? 0.10
                     : precipProb >= 0.4 ? 0.35
                     : precipProb >= 0.2 ? 0.65
                     : 1.0;
@@ -63,16 +127,17 @@ export function hourlyIrradiance(hour: number, precipProb: number): number {
   return PEAK_IRRADIANCE * solarAngle * cloudFactor;
 }
 
-// ── Window solar gain ─────────────────────────────────────────────────────────
+// ── Window solar gain ──────────────────────────────────────────────────────────
 
 export interface WindowInput {
-  direction:      Direction;
-  areaSqFt:       number;
-  glazingType:    GlazingType;
+  direction:   Direction;
+  areaSqFt:    number;
+  glazingType: GlazingType;
 }
 
 /**
- * Returns total solar gain through all windows (BTU/hr) for a given hour.
+ * Solar heat gain through windows (BTU/hr).
+ * Uses SHGC — the standard and correct approach for glazing.
  */
 export function windowSolarGain(
   windows:    WindowInput[],
@@ -81,25 +146,28 @@ export function windowSolarGain(
 ): number {
   const irr = hourlyIrradiance(hour, precipProb);
   if (irr === 0) return 0;
-
   return windows.reduce((sum, w) => {
-    const orientFn = ORIENT_FACTOR[w.direction] ?? (() => 0);
-    return sum + irr * orientFn(hour) * SHGC[w.glazingType] * w.areaSqFt;
+    const orient = ORIENT_FACTOR[w.direction]?.(hour) ?? 0;
+    return sum + irr * orient * SHGC[w.glazingType] * w.areaSqFt;
   }, 0);
 }
 
-// ── Wall solar gain ───────────────────────────────────────────────────────────
+// ── Wall solar gain ────────────────────────────────────────────────────────────
 
 export interface WallInput {
-  direction:  Direction;
-  areaSqFt:   number;
-  color:      SurfaceColor;
+  direction:      Direction;
+  areaSqFt:       number;
+  color:          SurfaceColor;
+  insulationLevel: InsulationLevel;  // needed for sol-air U-value lookup
 }
 
 /**
- * Returns total solar gain through all exterior walls (BTU/hr) for a given hour.
- * Uses a conservative conduction fraction — most absorbed solar heats the exterior
- * surface and re-radiates; only a small fraction conducts through the assembly.
+ * Solar heat gain through exterior walls (BTU/hr) — sol-air method.
+ *
+ *   Q = U_wall × A × (alpha × I × orient / ho_wall)
+ *
+ * A better-insulated wall (lower U) correctly admits LESS solar heat.
+ * A darker wall (higher alpha) correctly admits MORE.
  */
 export function wallSolarGain(
   walls:      WallInput[],
@@ -108,70 +176,53 @@ export function wallSolarGain(
 ): number {
   const irr = hourlyIrradiance(hour, precipProb);
   if (irr === 0) return 0;
-
-  // ~6% conduction fraction for a typical insulated wall assembly
-  const WALL_CONDUCTION_FRACTION = 0.06;
-
   return walls.reduce((sum, w) => {
-    const orientFn = ORIENT_FACTOR[w.direction] ?? (() => 0);
-    const absorbed = irr * orientFn(hour) * ABSORPTIVITY[w.color] * w.areaSqFt;
-    return sum + absorbed * WALL_CONDUCTION_FRACTION;
+    const orient  = ORIENT_FACTOR[w.direction]?.(hour) ?? 0;
+    const uWall   = WALL_U[w.insulationLevel] ?? WALL_U.AT_CODE;
+    const solAirDeltaT = ABSORPTIVITY[w.color] * irr * orient / HO_WALL;
+    return sum + uWall * w.areaSqFt * solAirDeltaT;
   }, 0);
 }
 
-// ── Roof solar gain ───────────────────────────────────────────────────────────
+// ── Roof / ceiling solar gain ──────────────────────────────────────────────────
 
 /**
- * Returns solar gain through the roof/ceiling (BTU/hr) for a given hour.
- * Attic-buffered roofs attenuate by 60% due to attic ventilation and mass.
+ * Solar heat gain through the roof/ceiling assembly (BTU/hr) — sol-air method.
+ *
+ *   Q = U_ceiling × A × (alpha × I_horiz × attic_factor / ho_roof)
+ *
+ * A better-insulated ceiling (lower U) correctly admits less heat.
+ * An attic-buffered roof attenuates more (lower attic_factor).
  */
 export function roofSolarGain(
-  floorAreaSqFt: number,
-  roofColor:     SurfaceColor,
-  roofType:      RoofType,
-  hour:          number,
-  precipProb:    number,
+  floorAreaSqFt:   number,
+  roofColor:       SurfaceColor,
+  roofType:        RoofType,
+  insulationLevel: InsulationLevel,
+  hour:            number,
+  precipProb:      number,
 ): number {
   const irr = hourlyIrradiance(hour, precipProb);
   if (irr === 0) return 0;
 
-  // Roof sees mostly diffuse + direct from directly above — use south factor as proxy
-  const roofFactor = ORIENT_FACTOR.S(hour) * 0.9;
-  const absorbed   = irr * roofFactor * ABSORPTIVITY[roofColor] * floorAreaSqFt;
-
-  // Realistic roof-to-room conduction fractions
-  // Most absorbed solar heats the roof deck and re-radiates or vents; only a small
-  // fraction conducts through the assembly into the conditioned space.
-  const attenuation = roofType === "ATTIC_BUFFERED"   ? 0.06   // attic vents most; ~6% reaches room
-                    : roofType === "FLAT_VAULTED"      ? 0.12   // no attic buffer; ~12%
-                    : /* DIRECT_EXPOSED */               0.20;  // minimal assembly; ~20%
-
-  return absorbed * attenuation;
+  // Roof is roughly horizontal — use south-proxy orientation at 0.9 efficiency
+  const roofOrient   = ORIENT_FACTOR.S(hour) * 0.9;
+  const uCeiling     = CEILING_U[insulationLevel] ?? CEILING_U.AT_CODE;
+  const solAirDeltaT = ABSORPTIVITY[roofColor] * irr * roofOrient * ATTIC_FACTOR[roofType] / HO_ROOF;
+  return uCeiling * floorAreaSqFt * solAirDeltaT;
 }
 
-// ── Ceiling UA (replaces flat floor penalty) ──────────────────────────────────
+// ── Ceiling UA (conductive heat loss, not solar) ───────────────────────────────
 
 /**
- * Ceiling U-values (BTU/hr·ft²·°F) — ASHRAE 90.1-2019 CZ4A
- * BELOW_CODE: older homes typically R-19 → U ≈ 0.052
- * AT_CODE:    R-38 required in CZ4A → U ≈ 0.026
- * ABOVE_CODE: R-49+ → U ≈ 0.020
- */
-const CEILING_U: Record<string, number> = {
-  BELOW_CODE: 0.052,
-  AT_CODE:    0.026,
-  ABOVE_CODE: 0.020,
-};
-
-/**
- * Returns ceiling UA (BTU/hr·°F) — heat loss through the ceiling/roof assembly.
- * Only meaningful for top-floor rooms where ceiling faces outdoors or attic.
+ * Ceiling UA (BTU/hr·°F) — steady-state conductive heat loss.
+ * Only applies to top-floor rooms.
  */
 export function ceilingUA(
-  floorAreaSqFt: number,
+  floorAreaSqFt:  number,
   insulationLevel: string,
-  isTopFloor: boolean,
+  isTopFloor:      boolean,
 ): number {
   if (!isTopFloor) return 0;
-  return floorAreaSqFt * (CEILING_U[insulationLevel] ?? CEILING_U.AT_CODE);
+  return floorAreaSqFt * (CEILING_U[insulationLevel as InsulationLevel] ?? CEILING_U.AT_CODE);
 }

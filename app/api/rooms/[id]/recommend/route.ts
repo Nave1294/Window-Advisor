@@ -52,13 +52,15 @@ export async function POST(
     return { hour: slot.hour, balancePt: balancePointForSlot(roomFull, dow, slot.hour, bias, slot.precipProb) };
   });
 
-  // Range label: only use waking hours (7 AM–10 PM) to avoid huge swings from 3 AM empty-room slots
-  const wakingBPs = bpSlots.filter(s => s.hour >= 7 && s.hour < 22).map(s => s.balancePt);
-  const bpMin = wakingBPs.length ? Math.min(...wakingBPs) : balancePt;
-  const bpMax = wakingBPs.length ? Math.max(...wakingBPs) : balancePt;
-  const bpRange = Math.abs(bpMax - bpMin) < 2
-    ? { min: balancePt, max: balancePt, label: `${Math.round(balancePt)}°F` }
-    : { min: Math.round(bpMin * 10)/10, max: Math.round(bpMax * 10)/10, label: `${Math.round(bpMin)}–${Math.round(bpMax)}°F today` };
+  // Balance point label — show the stored weekly average as a stable single value.
+  // Intraday variation from solar is visible in the timeline gradient.
+  const bpMin = bpSlots.length ? Math.min(...bpSlots.map(s => s.balancePt)) : balancePt;
+  const bpMax = bpSlots.length ? Math.max(...bpSlots.map(s => s.balancePt)) : balancePt;
+  const bpRange = {
+    min:   Math.round(bpMin * 10) / 10,
+    max:   Math.round(bpMax * 10) / 10,
+    label: `${Math.round(balancePt)}°F`,
+  };
 
   const existing = await db.select().from(recommendations).where(eq(recommendations.roomId, id)).all();
   const todayRec = existing.find(r => r.date === today);
