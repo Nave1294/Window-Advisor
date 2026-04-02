@@ -43,7 +43,7 @@ export async function runDailyDigest(): Promise<DigestResult> {
         const rawBP     = room.balancePoint ?? room.maxTempF - 20;
         const balancePt = Math.round((rawBP - bias) * 10) / 10;
 
-        const result = generateRecommendation(roomFull, forecast.days);
+        const result = generateRecommendation(roomFull, forecast.days, today);
         const airing = generateAiringRecommendations(room, forecast.days, balancePt);
 
         const existingRecs = await db.select().from(recommendations).where(eq(recommendations.roomId, room.id)).all();

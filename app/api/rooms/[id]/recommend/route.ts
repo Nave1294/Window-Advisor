@@ -39,26 +39,27 @@ export async function POST(
   const bias      = Math.max(-5, Math.min(5, room.comfortBias ?? 0));
   const rawBP     = room.balancePoint ?? room.maxTempF - 20;
   const balancePt = Math.round((rawBP - bias) * 10) / 10;
+  const today     = todayDateStr();
 
-  const result = generateRecommendation(roomFull, forecast.days);
+  const result = generateRecommendation(roomFull, forecast.days, today);
   const airing = generateAiringRecommendations(room, forecast.days, balancePt);
 
-  // Calculate today's BP range and per-slot BP for timeline
+  // Per-slot BP for timeline — only waking occupied hours for the range label
   const { balancePointForSlot } = await import("@/lib/balance-point");
   const todaySlots = forecast.days[0]?.slots ?? [];
   const bpSlots = todaySlots.map(slot => {
     const dow = new Date(slot.ts * 1000).getUTCDay();
     return { hour: slot.hour, balancePt: balancePointForSlot(roomFull, dow, slot.hour, bias, slot.precipProb) };
-  }).filter(s => s.balancePt > 0);
+  });
 
-  const todayBPs = bpSlots.map(s => s.balancePt);
-  const bpMin = todayBPs.length ? Math.min(...todayBPs) : balancePt;
-  const bpMax = todayBPs.length ? Math.max(...todayBPs) : balancePt;
-  const bpRange = Math.abs(bpMax - bpMin) < 1
-    ? { min: balancePt, max: balancePt, label: `${balancePt.toFixed(1)}°F` }
+  // Range label: only use waking hours (7 AM–10 PM) to avoid huge swings from 3 AM empty-room slots
+  const wakingBPs = bpSlots.filter(s => s.hour >= 7 && s.hour < 22).map(s => s.balancePt);
+  const bpMin = wakingBPs.length ? Math.min(...wakingBPs) : balancePt;
+  const bpMax = wakingBPs.length ? Math.max(...wakingBPs) : balancePt;
+  const bpRange = Math.abs(bpMax - bpMin) < 2
+    ? { min: balancePt, max: balancePt, label: `${Math.round(balancePt)}°F` }
     : { min: Math.round(bpMin * 10)/10, max: Math.round(bpMax * 10)/10, label: `${Math.round(bpMin)}–${Math.round(bpMax)}°F today` };
 
-  const today   = todayDateStr();
   const existing = await db.select().from(recommendations).where(eq(recommendations.roomId, id)).all();
   const todayRec = existing.find(r => r.date === today);
 

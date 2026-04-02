@@ -160,7 +160,17 @@ export function RoomCard({ state, today, nowHour, onRefresh, onDelete, onToggleN
               background:rec.shouldOpen?"var(--sage-light)":"var(--bg-subtle)",
               border:`1px solid ${rec.shouldOpen?"#A3E4B5":"var(--border-mid)"}`,
             }}>
-              <span style={{ fontSize:20, flexShrink:0, marginTop:2 }}>{rec.shouldOpen?"🪟":"🔒"}</span>
+              <span style={{ fontSize:20, flexShrink:0, marginTop:2 }}>
+                {rec.shouldOpen ? (
+                  // Window-open icon — SVG so it renders correctly on all platforms
+                  <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="18" height="18" rx="2" stroke="#1A8C3A" strokeWidth="1.6" fill="none"/>
+                    <line x1="2" y1="11" x2="20" y2="11" stroke="#1A8C3A" strokeWidth="1.4"/>
+                    <line x1="11" y1="2" x2="11" y2="20" stroke="#1A8C3A" strokeWidth="1.4"/>
+                    <path d="M6 6.5 L9 8.5 L6 10.5" stroke="#1A8C3A" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+                  </svg>
+                ) : "🔒"}
+              </span>
               <div>
                 <p style={{ fontSize:14, color:"var(--navy)", lineHeight:1.5, marginBottom:summary?4:0 }}>
                   {summary || condLine}

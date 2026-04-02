@@ -59,26 +59,42 @@ function fmtRange(startHour: number, durationMin: number): string {
 }
 
 function disruptionScore(slot: HourlySlot, room: Room, balancePt: number): number {
-  const tempDelta    = Math.abs(slot.tempF - balancePt);
-  const humidPenalty = slot.humidity > room.maxHumidity ? (slot.humidity - room.maxHumidity) * 0.5 : 0;
-  const dewPenalty   = slot.dewPointF > 62 ? (slot.dewPointF - 62) * 1.5 : 0;
-  const rainPenalty  = slot.precipProb >= PRECIP_AIRING_CUTOFF ? 50 : 0;
-  return tempDelta + humidPenalty + dewPenalty + rainPenalty;
+  // Rain is an absolute blocker
+  if (slot.precipProb >= PRECIP_AIRING_CUTOFF) return 999;
+
+  let score = 0;
+
+  // Temperature: penalise if outdoor air would meaningfully heat or cool the room
+  // Use comfort range midpoint as the "ideal" airing temp, not the balance point
+  const idealAirTemp = (room.minTempF + room.maxTempF) / 2;  // e.g. 71°F for 68-74
+  const tempDelta = Math.abs(slot.tempF - idealAirTemp);
+  score += tempDelta * 0.8;  // 10°F off ideal = +8 score
+
+  // Humidity: penalise above comfort max
+  if (slot.humidity > room.maxHumidity) score += (slot.humidity - room.maxHumidity) * 0.5;
+
+  // Dew point: high dew point means humid air floods in
+  if (slot.dewPointF > 62) score += (slot.dewPointF - 62) * 1.2;
+
+  // Light rain/drizzle: partial penalty
+  if (slot.precipProb >= 0.25) score += (slot.precipProb - 0.25) * 30;
+
+  return score;
 }
 
 function disruptionLabel(score: number): "low" | "moderate" | "high" {
-  if (score < 8)  return "low";
-  if (score < 20) return "moderate";
-  return "high";
+  if (score < 6)  return "low";       // within ~7°F of ideal, low humidity
+  if (score < 16) return "moderate";  // somewhat off but acceptable
+  return "high";                       // significantly off or high humidity
 }
 
-function slotReason(slot: HourlySlot, score: number, balancePt: number): string {
+function slotReason(slot: HourlySlot, score: number, room: Room): string {
   const parts: string[] = [];
   if (slot.precipProb >= PRECIP_AIRING_CUTOFF) {
-    parts.push(`best available slot despite ${Math.round(slot.precipProb * 100)}% rain — open briefly if rain pauses`);
-  } else if (score < 8) {
-    parts.push(`outdoor temp (${slot.tempF.toFixed(0)}°F) is close to your balance point`);
-  } else if (slot.tempF < balancePt) {
+    parts.push(`best available despite ${Math.round(slot.precipProb * 100)}% rain — open briefly if rain pauses`);
+  } else if (score < 6) {
+    parts.push(`outdoor air (${slot.tempF.toFixed(0)}°F, ${slot.humidity}% RH) is close to your comfort range`);
+  } else if (slot.tempF < room.minTempF) {
     parts.push(`outdoor air is cool (${slot.tempF.toFixed(0)}°F) — brief open won't disrupt the room`);
   } else {
     parts.push(`least disruptive available slot (${slot.tempF.toFixed(0)}°F outside)`);
@@ -147,7 +163,7 @@ export function generateAiringRecommendations(
         date:         day.date,
         hour:         slot.hour,
         label:        fmtRange(slot.hour, AIRING_DURATION_MIN),
-        reason:       slotReason(slot, score, balancePt),
+        reason:       slotReason(slot, score, room),
         disruption:   disruptionLabel(score),
         intervalMins,
       });

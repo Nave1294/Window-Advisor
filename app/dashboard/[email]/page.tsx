@@ -226,7 +226,16 @@ export default function DashboardPage() {
 
     fetch("/api/ai/house-summary", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ rooms:loaded.map(s => ({ name:s.room.name, shouldOpen:s.rec!.shouldOpen })), highF:first.highF??70, lowF:first.lowF??55, cityName:first.cityName }),
+      body: JSON.stringify({
+        rooms: loaded.map(s => ({
+          name: s.room.name,
+          shouldOpen: s.rec!.shouldOpen,
+          // Pass today's open periods so AI knows if anything is actually open today
+          todayPeriods: s.rec!.openPeriods.filter(p => !p.startDate || p.startDate === today),
+        })),
+        highF: first.highF ?? 70, lowF: first.lowF ?? 55, cityName: first.cityName,
+        today,
+      }),
     }).then(r => r.json()).then(d => { if (d.text) setHouseLine(d.text); }).catch(() => {});
 
     fetch("/api/ai/greeting", {

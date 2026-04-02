@@ -91,8 +91,10 @@ function buildReason(slots: HourlySlot[], room: Room, balancePt: number): string
 export function generateRecommendation(
   room: Room & { exteriorWalls: { direction: string }[] },
   days: DayForecast[],
+  easternToday?: string,  // YYYY-MM-DD Eastern — pass from server to avoid UTC mismatch
 ): RecommendationResult {
-  const today = days[0]?.date ?? new Date().toISOString().slice(0,10);
+  // Use provided Eastern date, or fall back to days[0] date (may be UTC-offset)
+  const today = easternToday ?? days[0]?.date ?? new Date().toISOString().slice(0,10);
   const bias   = Math.max(-COMFORT_BIAS_CAP, Math.min(COMFORT_BIAS_CAP, room.comfortBias ?? 0));
   const blocks = parseBlocks(room);
 

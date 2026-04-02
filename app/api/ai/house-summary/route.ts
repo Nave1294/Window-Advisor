@@ -3,28 +3,27 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
   const { rooms, highF, lowF, cityName } = await req.json();
-  const open   = (rooms as {name:string;shouldOpen:boolean}[]).filter(r => r.shouldOpen);
-  const closed = (rooms as {name:string;shouldOpen:boolean}[]).filter(r => !r.shouldOpen);
-  const total  = rooms.length;
 
-  const prompt = `Write one direct instruction (max 12 words) telling someone what to do with their windows.
+  type RoomInfo = { name:string; shouldOpen:boolean; todayPeriods:{from:string;to:string}[] };
+  const roomList = rooms as RoomInfo[];
 
-Situation: ${open.length} of ${total} rooms open today in ${cityName} (High ${highF}°F, Low ${lowF}°F)
-${open.length  > 0 ? `Open: ${open.map((r:{name:string})=>r.name).join(", ")}` : ""}
-${closed.length > 0 ? `Closed: ${closed.map((r:{name:string})=>r.name).join(", ")}` : ""}
+  // Only rooms with actual open periods TODAY count as "open"
+  const openToday   = roomList.filter(r => r.todayPeriods?.length > 0);
+  const closedToday = roomList.filter(r => !r.todayPeriods?.length);
+  const total = roomList.length;
 
-This must be a single direct ACTION instruction — not a summary of conditions.
-Use the room names if they differ. Otherwise say "whole house" or "everything".
+  const prompt = `Write one direct instruction (max 12 words) telling someone what to do with their windows TODAY.
 
-CORRECT examples:
-"Open Ilevan's Bedroom tonight from 11 PM."
-"Keep everything closed today."
-"Open the bedroom, keep The Lair closed tonight."
-"Good conditions across the house from 9 PM."
+Situation: ${openToday.length} of ${total} rooms have good conditions today in ${cityName} (High ${highF}°F, Low ${lowF}°F)
+${openToday.length  > 0 ? `Open today: ${openToday.map(r=>r.name).join(", ")}` : "No rooms have good conditions today."}
+${closedToday.length > 0 ? `Closed today: ${closedToday.map(r=>r.name).join(", ")}` : ""}
 
-WRONG (do not do this):
-"Both rooms have potential for ventilation this evening." ← summary, not instruction
-"Keep Ilevan's Bedroom and The Lair closed; open when cool." ← too long, vague
+Rules:
+- If NO rooms are open today, say "Keep everything closed today." — nothing else.
+- If ALL rooms are open, say when and which ones to open.
+- Must be about TODAY only — never say "this week" or mention future days.
+- Use room names if they differ. 12 words maximum.
+- A direct action, not a summary.
 
 Write only the instruction.`;
 
