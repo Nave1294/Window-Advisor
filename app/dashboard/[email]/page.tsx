@@ -3,354 +3,96 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AppHeader } from "@/app/components/AppHeader";
-import type { OpenPeriod } from "@/lib/recommendation";
-import type { AiringWindow } from "@/lib/airing";
-import { conditionLine, airingLine, wholeHouseLine } from "@/lib/condition-line";
 import { ForecastStrip } from "@/app/components/ForecastStrip";
-import { DayTimeline } from "@/app/components/DayTimeline";
+import { RoomCard, type Room, type TodayRec, type RoomState } from "@/app/components/RoomCard";
+import { conditionLine, wholeHouseLine } from "@/lib/condition-line";
 
-interface WindowChip { size:string; direction:string; }
-interface Room {
-  id:string; name:string; floorNumber:number; balancePoint:number|null;
-  minTempF:number; maxTempF:number; minHumidity:number; maxHumidity:number;
-  windows:WindowChip[]; notificationsEnabled:boolean;
-}
-interface AiringInfo { needsAiring:boolean; windows:AiringWindow[]; intervalMins:number; summary:string; }
-interface TodayRec {
-  shouldOpen:boolean; openPeriods:OpenPeriod[]; airingWindows:AiringWindow[]|null;
-  reasoning:string; emailSent:boolean; highF?:number; lowF?:number; cityName?:string;
-  airing?:AiringInfo;
-  bpRange?:  { min:number; max:number; label:string };
-  bpSlots?:  { hour:number; balancePt:number }[];
-  forecastDays?:  { date:string; highF:number; lowF:number }[];
-  forecastSlots?: { date:string; hour:number; ts:number; precipProb:number; tempF:number; humidity:number }[];
-}
-interface RoomState { room:Room; rec:TodayRec|null; loading:boolean; error:string; summary:string; notifEnabled:boolean; lastRefreshed:number|null; }
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function todayLabel() {
-  return new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",timeZone:"America/New_York"});
+  return new Date().toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric", timeZone:"America/New_York" });
 }
 function todayDate() {
-  return new Date().toLocaleDateString("en-CA",{timeZone:"America/New_York"}); // YYYY-MM-DD in Eastern
+  return new Date().toLocaleDateString("en-CA", { timeZone:"America/New_York" });
 }
 function nowHour() {
-  return parseInt(new Date().toLocaleString("en-US",{hour:"numeric",hour12:false,timeZone:"America/New_York"}));
+  return parseInt(new Date().toLocaleString("en-US", { hour:"numeric", hour12:false, timeZone:"America/New_York" }));
 }
 
-function Toggle({ on, onChange, label }: { on:boolean; onChange:(v:boolean)=>void; label:string }) {
-  return (
-    <button
-      onClick={() => onChange(!on)}
-      style={{
-        display:"flex", alignItems:"center", gap:8,
-        background:"none", border:"none", cursor:"pointer", padding:0,
-      }}
-    >
-      <div style={{
-        width:36, height:20, borderRadius:10, position:"relative",
-        background: on ? "var(--sky)" : "var(--border-mid)",
-        transition:"background 0.2s ease",
-        flexShrink:0,
-      }}>
-        <div style={{
-          position:"absolute", top:2, left: on ? 18 : 2,
-          width:16, height:16, borderRadius:"50%", background:"white",
-          boxShadow:"0 1px 3px rgba(0,0,0,0.2)",
-          transition:"left 0.2s ease",
-        }}/>
-      </div>
-      <span style={{ fontSize:13, color: on ? "var(--navy)" : "var(--muted)", fontWeight: on ? 500 : 400 }}>
-        {label}
-      </span>
-    </button>
-  );
-}
+// ── Delete confirmation modal ─────────────────────────────────────────────────
 
-function DeleteModal({ roomName,onConfirm,onCancel,deleting }:{roomName:string;onConfirm:()=>void;onCancel:()=>void;deleting:boolean}) {
-  return (
-    <div style={{position:"fixed",inset:0,zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:24,background:"rgba(0,0,0,0.4)",backdropFilter:"blur(8px)"}}>
-      <div className="card-raised" style={{width:"100%",maxWidth:360,padding:28}}>
-        <h3 style={{fontFamily:"'Lora',serif",fontSize:20,fontWeight:600,color:"var(--navy)",marginBottom:8}}>Delete {roomName}?</h3>
-        <p style={{fontSize:14,color:"var(--muted)",marginBottom:24,lineHeight:1.6}}>This will permanently delete this room and all its history.</p>
-        <div style={{display:"flex",gap:10}}>
-          <button className="btn-secondary" style={{flex:1}} onClick={onCancel} disabled={deleting}>Cancel</button>
-          <button className="btn-primary" style={{flex:1,background:"var(--error)"}} onClick={onConfirm} disabled={deleting}>{deleting?"Deleting…":"Delete"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RoomCard({ state,onRefresh,onDelete,onToggleNotif }:{
-  state:RoomState; onRefresh:()=>void; onDelete:()=>void; onToggleNotif:(v:boolean)=>void;
+function DeleteModal({ roomName, onConfirm, onCancel, deleting }: {
+  roomName:string; onConfirm:()=>void; onCancel:()=>void; deleting:boolean;
 }) {
-  const { room,rec,loading,error,summary,notifEnabled,lastRefreshed } = state;
-  const [expanded, setExpanded] = useState(false);
-  const today = todayDate();
-  const hour  = nowHour();
-
-  const airingWindows: AiringWindow[] = rec?.airing?.windows ?? rec?.airingWindows ?? [];
-  const needsAiring   = rec?.airing?.needsAiring ?? airingWindows.length > 0;
-  const condLine      = rec ? conditionLine(rec.shouldOpen, rec.openPeriods, today, hour) : "";
-  const airLine       = needsAiring ? airingLine(airingWindows, today, hour) : "";
-
-  // "Updated X min ago" label
-  const updatedLabel = lastRefreshed ? (() => {
-    const mins = Math.floor((Date.now() - lastRefreshed) / 60000);
-    if (mins < 1) return "Updated just now";
-    if (mins === 1) return "Updated 1 min ago";
-    if (mins < 60) return `Updated ${mins} min ago`;
-    const hrs = Math.floor(mins / 60);
-    return `Updated ${hrs}h ago`;
-  })() : null;
-
   return (
-    <div className="card-raised" style={{overflow:"hidden"}}>
-      {/* Header */}
-      <div style={{padding:"16px 20px 12px",borderBottom:"0.5px solid var(--border)",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
-        <div style={{flex:1,minWidth:0}}>
-          <h2 style={{fontFamily:"'Lora',serif",fontSize:18,fontWeight:600,color:"var(--navy)",marginBottom:2}}>{room.name}</h2>
-          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-            <p style={{fontSize:12,color:"var(--muted)"}}>
-              Floor {room.floorNumber}
-              {rec?.bpRange
-                ? ` · Balance point ${rec.bpRange.label}`
-                : room.balancePoint!==null
-                  ? ` · Balance point ${room.balancePoint?.toFixed(1)}°F`
-                  : ""}
-            </p>
-            {updatedLabel && (
-              <span style={{fontSize:11,color:"var(--muted-light)"}}>· {updatedLabel}</span>
-            )}
-          </div>
+    <div style={{ position:"fixed", inset:0, zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:24, background:"rgba(0,0,0,0.4)", backdropFilter:"blur(8px)" }}>
+      <div className="card-raised" style={{ width:"100%", maxWidth:360, padding:28 }}>
+        <h3 style={{ fontFamily:"'Lora',serif", fontSize:20, fontWeight:600, color:"var(--navy)", marginBottom:8 }}>Delete {roomName}?</h3>
+        <p style={{ fontSize:14, color:"var(--muted)", marginBottom:24, lineHeight:1.6 }}>This will permanently delete this room and all its history.</p>
+        <div style={{ display:"flex", gap:10 }}>
+          <button className="btn-secondary" style={{ flex:1 }} onClick={onCancel} disabled={deleting}>Cancel</button>
+          <button className="btn-primary" style={{ flex:1, background:"var(--error)" }} onClick={onConfirm} disabled={deleting}>{deleting?"Deleting…":"Delete"}</button>
         </div>
-        <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
-          {/* Refresh button — always visible */}
-          <button
-            onClick={onRefresh}
-            disabled={loading}
-            title="Refresh forecast"
-            style={{
-              display:"flex",alignItems:"center",justifyContent:"center",
-              width:30,height:30,borderRadius:8,border:"0.5px solid var(--border-mid)",
-              background:"var(--bg-subtle)",cursor:loading?"not-allowed":"pointer",
-              opacity:loading?0.4:1,transition:"opacity 0.2s",
-            }}
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{transform:loading?"rotate(180deg)":"rotate(0deg)",transition:"transform 0.5s"}}>
-              <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5a5.5 5.5 0 0 1 4 1.7" stroke="var(--muted)" strokeWidth="1.4" strokeLinecap="round" fill="none"/>
-              <polyline points="12,1 12,4.5 15.5,4.5" stroke="var(--muted)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-            </svg>
-          </button>
-          <Link href={`/edit/${room.id}`} style={{fontSize:12,fontWeight:500,color:"var(--muted)",textDecoration:"none",padding:"5px 10px",background:"var(--bg-subtle)",borderRadius:8,border:"0.5px solid var(--border-mid)"}}>Edit</Link>
-          <button onClick={onDelete} style={{fontSize:12,fontWeight:500,color:"var(--error)",padding:"5px 10px",background:"var(--error-light)",borderRadius:8,border:"0.5px solid #FFAAAA",cursor:"pointer"}}>Delete</button>
-        </div>
-      </div>
-
-      <div style={{padding:"16px 20px"}}>
-        {loading && (
-          <div style={{display:"flex",alignItems:"center",gap:8,color:"var(--muted)",fontSize:14}}>
-            <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" strokeDasharray="32" strokeDashoffset="12"/></svg>
-            Fetching forecast…
-          </div>
-        )}
-        {error && !loading && (
-          <div style={{fontSize:13,padding:"10px 14px",borderRadius:"var(--radius-sm)",background:"var(--error-light)",color:"var(--error)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <span>{error}</span>
-            <button className="btn-text" style={{fontSize:13}} onClick={onRefresh}>Retry</button>
-          </div>
-        )}
-        {!loading && !error && !rec && (
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-            <p style={{fontSize:14,color:"var(--muted)"}}>No recommendation yet for today.</p>
-            <button className="btn-secondary" style={{fontSize:13,padding:"7px 14px"}} onClick={onRefresh}>Generate</button>
-          </div>
-        )}
-
-        {!loading && rec && (
-          <div style={{display:"flex",flexDirection:"column",gap:10}}>
-
-            {/* Temperature status */}
-            <div style={{
-              display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",
-              borderRadius:"var(--radius-md)",
-              background:rec.shouldOpen?"var(--sage-light)":"var(--bg-subtle)",
-              border:`1px solid ${rec.shouldOpen?"#A3E4B5":"var(--border-mid)"}`,
-            }}>
-              <span style={{fontSize:20,flexShrink:0,marginTop:2}}>{rec.shouldOpen?"🪟":"🔒"}</span>
-              <div>
-                <p style={{fontSize:14,color:"var(--navy)",lineHeight:1.5,marginBottom:summary?4:0}}>
-                  {summary || condLine}
-                </p>
-                {summary && <p style={{fontSize:13,color:rec.shouldOpen?"#1A8C3A":"var(--muted)",fontWeight:500}}>{condLine}</p>}
-              </div>
-            </div>
-
-            {/* ── Day timeline ── */}
-            {(rec.bpSlots?.length ?? 0) > 0 && (
-              <DayTimeline
-                slots={(rec.forecastSlots??[]).filter(s=>s.date===today)}
-                openPeriods={rec.openPeriods}
-                airingWindows={rec.airing?.windows??[]}
-                bpSlots={rec.bpSlots??[]}
-                today={today}
-                nowHour={hour}
-              />
-            )}
-
-            {/* Air quality — always shown */}
-            <div style={{
-              display:"flex",alignItems:"flex-start",gap:12,padding:"12px 16px",
-              borderRadius:"var(--radius-md)",background:"var(--bg-subtle)",border:"0.5px solid var(--border-mid)",
-            }}>
-              <span style={{fontSize:20,flexShrink:0,marginTop:2}}>🌬</span>
-              <div style={{flex:1}}>
-                <p style={{fontSize:14,color:"var(--navy)",marginBottom:6}}>Air quality</p>
-                {(() => {
-                  const todayW = airingWindows.filter(w=>w.date===today);
-                  if (!todayW.length) return (
-                    <p style={{fontSize:13,color:"var(--muted)"}}>
-                      {rec?.shouldOpen
-                        ? "Open windows provide natural ventilation today."
-                        : "Air out briefly when outdoor conditions improve — check back this evening."}
-                    </p>
-                  );
-                  const options = todayW.slice(0, 3);
-                  return (
-                    <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                      {options.map((w,i) => (
-                        <div key={i} style={{
-                          display:"flex",alignItems:"center",justifyContent:"space-between",
-                          padding:"7px 10px",borderRadius:8,
-                          background:i===0?"var(--white)":"transparent",
-                          border:i===0?"0.5px solid var(--border)":"none",
-                        }}>
-                          <div>
-                            <span style={{fontSize:13,fontWeight:i===0?600:400,color:"var(--navy)"}}>{w.label}</span>
-                            {i===0 && <span style={{fontSize:11,marginLeft:6,color:"var(--sky)"}}>Best option</span>}
-                          </div>
-                          <span style={{fontSize:11,padding:"2px 7px",borderRadius:10,fontWeight:500,
-                            background:w.disruption==="low"?"var(--sage-light)":w.disruption==="moderate"?"var(--amber-light)":"var(--error-light)",
-                            color:w.disruption==="low"?"#1A8C3A":w.disruption==="moderate"?"#B25C00":"var(--error)"}}>
-                            {w.disruption==="low"?"Low impact":w.disruption==="moderate"?"Moderate":"High impact"}
-                          </span>
-                        </div>
-                      ))}
-                      {todayW[0].reason && (
-                        <p style={{fontSize:11,color:"var(--muted)",marginTop:2}}>{todayW[0].reason}</p>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
-
-            {/* Notification toggle */}
-            <div style={{
-              display:"flex",alignItems:"center",justifyContent:"space-between",
-              padding:"10px 14px",borderRadius:"var(--radius-sm)",
-              background:"var(--bg-subtle)",border:"0.5px solid var(--border-mid)",
-            }}>
-              <div>
-                <Toggle
-                  on={notifEnabled}
-                  onChange={onToggleNotif}
-                  label={notifEnabled ? "Notifications on" : "Notifications off"}
-                />
-                {notifEnabled && (
-                  <p style={{fontSize:11,color:"var(--muted)",marginTop:4,paddingLeft:44}}>
-                    You'll get an email when conditions open or close
-                  </p>
-                )}
-              </div>
-              <span style={{fontSize:18}}>🔔</span>
-            </div>
-
-            {/* Why? toggle */}
-            <button
-              onClick={()=>setExpanded(e=>!e)}
-              style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",background:"none",border:"none",cursor:"pointer",padding:"4px 0",color:"var(--muted)"}}
-            >
-              <span style={{fontSize:13,fontWeight:500}}>Why?</span>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{transform:expanded?"rotate(180deg)":"rotate(0deg)",transition:"transform 0.2s ease"}}>
-                <path d="M4 6L8 10L12 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
-
-            {expanded && (
-              <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:8,paddingTop:2}}>
-                <div style={{display:"flex",gap:12,flexWrap:"wrap",fontSize:12,color:"var(--muted)",padding:"8px 12px",background:"var(--bg-subtle)",borderRadius:"var(--radius-sm)"}}>
-                  {rec.cityName && <span>📍 {rec.cityName}</span>}
-                  {rec.highF!=null && (
-                    rec.lowF!=null && rec.lowF !== rec.highF
-                      ? <span>High {rec.highF.toFixed(0)}°F · Low {rec.lowF.toFixed(0)}°F</span>
-                      : <span>Forecast {rec.highF.toFixed(0)}°F</span>
-                  )}
-                  {room.balancePoint!=null && <span>Balance point {room.balancePoint.toFixed(1)}°F</span>}
-                  <span>Comfort {room.minTempF}–{room.maxTempF}°F · {room.minHumidity}–{room.maxHumidity}% RH</span>
-                </div>
-                <p style={{fontSize:13,color:"var(--muted)",lineHeight:1.6,padding:"8px 12px",background:"var(--bg-subtle)",borderRadius:"var(--radius-sm)"}}>{rec.reasoning}</p>
-
-                {rec.shouldOpen && rec.openPeriods.filter(p=>!p.startDate||p.startDate===today).length>0 && (
-                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    <p style={{fontSize:11,fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.06em"}}>Condition windows</p>
-                    {rec.openPeriods.filter(p=>!p.startDate||p.startDate===today).map((p,i)=>(
-                      <div key={i} style={{padding:"10px 12px",borderRadius:"var(--radius-sm)",background:"var(--sky-light)",border:"1px solid var(--sky-mid)"}}>
-                        <p style={{fontSize:13,fontWeight:600,color:"var(--navy)",marginBottom:3}}>
-                          {p.from.replace(":00 "," ")} – {p.to.replace(":00 "," ")}
-                          {p.multiDay&&<span style={{fontSize:11,marginLeft:8,color:"var(--sky)"}}>Multi-day</span>}
-                        </p>
-                        <p style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>{p.reason}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {needsAiring && airingWindows.filter(w=>w.date===today).length>0 && (
-                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    <p style={{fontSize:11,fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.06em"}}>Air quality detail</p>
-                    {rec.airing?.summary && <p style={{fontSize:12,color:"var(--muted)",lineHeight:1.5}}>{rec.airing.summary}</p>}
-                    {airingWindows.filter(w=>w.date===today).map((w,i)=>(
-                      <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:"var(--bg-subtle)",borderRadius:"var(--radius-sm)",border:"0.5px solid var(--border)"}}>
-                        <div>
-                          <p style={{fontSize:13,fontWeight:500,color:"var(--navy)"}}>{w.label}</p>
-                          <p style={{fontSize:11,color:"var(--muted)",marginTop:2}}>{w.reason}</p>
-                        </div>
-                        <span style={{fontSize:11,padding:"3px 8px",borderRadius:10,fontWeight:500,
-                          background:w.disruption==="low"?"var(--sage-light)":w.disruption==="moderate"?"var(--amber-light)":"var(--error-light)",
-                          color:w.disruption==="low"?"#1A8C3A":w.disruption==="moderate"?"#B25C00":"var(--error)"}}>
-                          {w.disruption==="low"?"Low impact":w.disruption==="moderate"?"Moderate":"High impact"}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:4}}>
-                  <span style={{fontSize:12,color:"var(--muted-light)"}}>{rec.emailSent?"✓ Email sent this morning":"Email sends at 7 AM"}</span>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
 }
+
+// ── Timeline legend ───────────────────────────────────────────────────────────
+
+function TimelineLegend() {
+  return (
+    <div style={{ marginTop:24, padding:"14px 18px", borderRadius:"var(--radius-md)", background:"var(--white)", border:"0.5px solid var(--border)" }}>
+      <p style={{ fontSize:11, fontWeight:600, color:"var(--muted)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:10 }}>Timeline key</p>
+      <div style={{ display:"flex", flexWrap:"wrap", gap:"10px 20px" }}>
+        {[
+          { color:"#93C5FD", label:"Cool (below balance point)" },
+          { color:"#A7F3D0", label:"Near balance point" },
+          { color:"#FCD34D", label:"Warm (above balance point)" },
+          { color:"#F87171", label:"Hot" },
+        ].map(({ color, label }) => (
+          <div key={label} style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <div style={{ width:14, height:10, borderRadius:3, background:color, flexShrink:0 }}/>
+            <span style={{ fontSize:12, color:"var(--muted)" }}>{label}</span>
+          </div>
+        ))}
+        {[
+          { bg:"#16A34A", label:"Open window" },
+          { bg:"#DC2626", label:"Close window" },
+          { bg:"#1D4ED8", label:"Air out room (CO₂)" },
+        ].map(({ bg, label }) => (
+          <div key={label} style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <div style={{ width:8, height:8, borderRadius:"50%", background:bg, border:"1.5px solid white", boxShadow:"0 1px 3px rgba(0,0,0,0.2)", flexShrink:0 }}/>
+            <span style={{ fontSize:12, color:"var(--muted)" }}>{label}</span>
+          </div>
+        ))}
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <div style={{ width:2, height:14, borderRadius:1, background:"rgba(0,0,0,0.35)", flexShrink:0 }}/>
+          <span style={{ fontSize:12, color:"var(--muted)" }}>Current hour</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Dashboard page ────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const { email }   = useParams<{email:string}>();
-  const decoded     = decodeURIComponent(email);
+  const { email } = useParams<{ email:string }>();
+  const decoded   = decodeURIComponent(email);
+
   const [roomStates,  setRoomStates]  = useState<RoomState[]>([]);
   const [pageLoading, setPageLoading] = useState(true);
   const [pageError,   setPageError]   = useState("");
-  const [greeting,    setGreeting]    = useState("");
   const [houseLine,   setHouseLine]   = useState("");
-  const [deleteTarget,setDeleteTarget]= useState<Room|null>(null);
+  const [greeting,    setGreeting]    = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Room|null>(null);
   const [deleting,    setDeleting]    = useState(false);
 
-  const loadRec = useCallback(async (roomId:string) => {
-    setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:true,error:""}:s));
+  // ── Load / refresh a single room recommendation ────────────────────────────
+
+  const loadRec = useCallback(async (roomId: string) => {
+    setRoomStates(prev => prev.map(s => s.room.id === roomId ? { ...s, loading:true, error:"" } : s));
     try {
       const getRes  = await fetch(`/api/rooms/${roomId}/recommend`);
       const getData = await getRes.json();
@@ -358,34 +100,32 @@ export default function DashboardPage() {
       if (getData.recommendation) {
         const highF = getData.forecast?.days?.[0]?.highF;
         const lowF  = getData.forecast?.days?.[0]?.lowF;
-        // If high === low the forecastMeta is stale — fall through to fresh POST
-        if (highF != null && lowF != null && highF === lowF) {
-          // fall through to POST below
-        } else {
+        // Skip stale cache (high === low means forecastMeta predates the new schema)
+        if (highF == null || lowF == null || highF !== lowF) {
           const rec: TodayRec = {
             ...getData.recommendation,
             airing:        getData.airing,
             bpRange:       getData.bpRange,
             bpSlots:       getData.bpSlots,
-            highF,
-            lowF,
+            highF, lowF,
             cityName:      getData.forecast?.cityName,
             forecastDays:  getData.forecast?.days,
             forecastSlots: getData.forecast?.slots,
           };
-          setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec,lastRefreshed:Date.now()}:s));
+          setRoomStates(prev => prev.map(s => s.room.id === roomId ? { ...s, loading:false, rec, lastRefreshed:Date.now() } : s));
           triggerSummary(roomId);
           return;
         }
       }
 
-      const postRes  = await fetch(`/api/rooms/${roomId}/recommend`,{method:"POST"});
+      // No cache or stale — fetch fresh
+      const postRes  = await fetch(`/api/rooms/${roomId}/recommend`, { method:"POST" });
       const postData = await postRes.json();
-      if (!postRes.ok) throw new Error(postData.error??"Failed.");
+      if (!postRes.ok) throw new Error(postData.error ?? "Failed.");
       const rec: TodayRec = {
         shouldOpen:    postData.recommendation.shouldOpen,
-        openPeriods:   postData.recommendation.openPeriods??[],
-        airingWindows: postData.recommendation.airingWindows??null,
+        openPeriods:   postData.recommendation.openPeriods ?? [],
+        airingWindows: postData.recommendation.airingWindows ?? null,
         reasoning:     postData.recommendation.reasoning,
         emailSent:     postData.recommendation.emailSent,
         highF:         postData.forecast?.days?.[0]?.highF,
@@ -397,227 +137,215 @@ export default function DashboardPage() {
         forecastDays:  postData.forecast?.days,
         forecastSlots: postData.forecast?.slots,
       };
-      setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,rec,lastRefreshed:Date.now()}:s));
+      setRoomStates(prev => prev.map(s => s.room.id === roomId ? { ...s, loading:false, rec, lastRefreshed:Date.now() } : s));
       triggerSummary(roomId);
-    } catch(err) {
-      setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,loading:false,error:err instanceof Error?err.message:"Failed."}:s));
+    } catch (err) {
+      setRoomStates(prev => prev.map(s => s.room.id === roomId ? { ...s, loading:false, error:err instanceof Error ? err.message : "Failed." } : s));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[]);
+  }, []);
+
+  // ── Trigger AI room summary ────────────────────────────────────────────────
 
   function triggerSummary(roomId: string) {
     setRoomStates(prev => {
-      const s = prev.find(x=>x.room.id===roomId);
+      const s = prev.find(x => x.room.id === roomId);
       if (!s?.rec) return prev;
-      const today   = todayDate();
-      const hour    = nowHour();
+      const today = todayDate();
+      const hour  = nowHour();
       const todayPeriods = s.rec.openPeriods.filter(p => !p.startDate || p.startDate === today);
-      // Pre-compute the deterministic condition line so the AI can't contradict it
       const cLine = conditionLine(s.rec.shouldOpen, s.rec.openPeriods, today, hour);
-      fetch("/api/ai/room-summary",{
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          roomName:s.room.name, shouldOpen:s.rec.shouldOpen, openPeriods:todayPeriods,
-          reasoning:s.rec.reasoning, highF:s.rec.highF??70, lowF:s.rec.lowF??55,
-          bpRange:s.rec.bpRange ?? null,
-          nowHour: hour,
+      fetch("/api/ai/room-summary", {
+        method:"POST", headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({
+          roomName:      s.room.name,
+          shouldOpen:    s.rec.shouldOpen,
+          openPeriods:   todayPeriods,
+          highF:         s.rec.highF ?? 70,
+          lowF:          s.rec.lowF  ?? 55,
+          bpRange:       s.rec.bpRange ?? null,
+          nowHour:       hour,
           conditionLine: cLine,
         }),
-      }).then(r=>r.json()).then(d=>{
-        if(d.text) setRoomStates(p=>p.map(x=>x.room.id===roomId?{...x,summary:d.text}:x));
-      }).catch(()=>{});
+      }).then(r => r.json()).then(d => {
+        if (d.text) setRoomStates(p => p.map(x => x.room.id === roomId ? { ...x, summary:d.text } : x));
+      }).catch(() => {});
       return prev;
     });
   }
 
+  // ── Notification toggle ────────────────────────────────────────────────────
+
   async function toggleNotif(roomId: string, enabled: boolean) {
-    setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,notifEnabled:enabled}:s));
+    setRoomStates(prev => prev.map(s => s.room.id === roomId ? { ...s, notifEnabled:enabled } : s));
     try {
-      const res = await fetch(`/api/rooms/${roomId}/notifications`,{
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ enabled }),
+      const res = await fetch(`/api/rooms/${roomId}/notifications`, {
+        method:"POST", headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ enabled }),
       });
       if (!res.ok) throw new Error("Failed");
     } catch {
-      // Revert on failure
-      setRoomStates(prev=>prev.map(s=>s.room.id===roomId?{...s,notifEnabled:!enabled}:s));
+      setRoomStates(prev => prev.map(s => s.room.id === roomId ? { ...s, notifEnabled:!enabled } : s));
     }
   }
 
-  useEffect(()=>{
+  // ── Initial room load ──────────────────────────────────────────────────────
+
+  useEffect(() => {
     fetch(`/api/rooms?email=${encodeURIComponent(decoded)}`)
-      .then(r=>r.json())
-      .then(d=>{
-        if(d.error){setPageError(d.error);return;}
-        const states:RoomState[]=(d.rooms as Room[]).map(room=>({
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { setPageError(d.error); return; }
+        const states: RoomState[] = (d.rooms as Room[]).map(room => ({
           room, rec:null, loading:false, error:"", summary:"",
-          notifEnabled: room.notificationsEnabled,
-          lastRefreshed: null,
+          notifEnabled: room.notificationsEnabled, lastRefreshed: null,
         }));
         setRoomStates(states);
-        states.forEach(s=>loadRec(s.room.id));
+        states.forEach(s => loadRec(s.room.id));
       })
-      .catch(()=>setPageError("Failed to load rooms."))
-      .finally(()=>setPageLoading(false));
-  },[decoded,loadRec]);
+      .catch(() => setPageError("Failed to load rooms."))
+      .finally(() => setPageLoading(false));
+  }, [decoded, loadRec]);
 
-  // Whole-house line + greeting
-  useEffect(()=>{
-    const loaded = roomStates.filter(s=>s.rec&&!s.loading);
+  // ── House summary + greeting (fires when recs are loaded) ─────────────────
+
+  useEffect(() => {
+    const loaded = roomStates.filter(s => s.rec && !s.loading);
     if (!loaded.length) return;
-    const today = todayDate(); const hour = nowHour();
-    const rdata = loaded.map(s=>({name:s.room.name,shouldOpen:s.rec!.shouldOpen,openPeriods:s.rec!.openPeriods,today,nowHour:hour}));
-    setHouseLine(wholeHouseLine(rdata));
-    const first = loaded.find(s=>s.rec?.cityName)?.rec;
-    if (!first?.cityName) return;
-    fetch("/api/ai/house-summary",{
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({ rooms:loaded.map(s=>({name:s.room.name,shouldOpen:s.rec!.shouldOpen})), highF:first.highF??70, lowF:first.lowF??55, cityName:first.cityName }),
-    }).then(r=>r.json()).then(d=>{ if(d.text) setHouseLine(d.text); }).catch(()=>{});
-    fetch("/api/ai/greeting",{
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          date:today, cityName:first.cityName, highF:first.highF??70, lowF:first.lowF??55,
-          hourOfDay: nowHour(),
-          rooms:loaded.map(s=>({
-            shouldOpen:s.rec!.shouldOpen,
-            bpRange: s.rec?.bpRange ?? null,
-          })),
-        }),
-      }).then(r=>r.json()).then(d=>{ if(d.text) setGreeting(d.text); }).catch(()=>{});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[roomStates.map(s=>!!s.rec).join(",")]);
+    const today = todayDate();
+    const hour  = nowHour();
 
-  // Hourly auto-refresh — silently re-fetches all rooms and regenerates greeting
+    // Deterministic fallback
+    setHouseLine(wholeHouseLine(loaded.map(s => ({
+      name:s.room.name, shouldOpen:s.rec!.shouldOpen,
+      openPeriods:s.rec!.openPeriods, today, nowHour:hour,
+    }))));
+
+    const first = loaded.find(s => s.rec?.cityName)?.rec;
+    if (!first?.cityName) return;
+
+    fetch("/api/ai/house-summary", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ rooms:loaded.map(s => ({ name:s.room.name, shouldOpen:s.rec!.shouldOpen })), highF:first.highF??70, lowF:first.lowF??55, cityName:first.cityName }),
+    }).then(r => r.json()).then(d => { if (d.text) setHouseLine(d.text); }).catch(() => {});
+
+    fetch("/api/ai/greeting", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({
+        date:today, cityName:first.cityName, highF:first.highF??70, lowF:first.lowF??55,
+        hourOfDay: hour,
+        rooms: loaded.map(s => ({ shouldOpen:s.rec!.shouldOpen, bpRange:s.rec?.bpRange ?? null })),
+      }),
+    }).then(r => r.json()).then(d => { if (d.text) setGreeting(d.text); }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomStates.map(s => !!s.rec).join(",")]);
+
+  // ── Hourly auto-refresh ────────────────────────────────────────────────────
+
   useEffect(() => {
     const interval = setInterval(() => {
-      setGreeting(""); // clear so greeting regenerates with correct time of day
-      setRoomStates(prev => {
-        prev.forEach(s => loadRec(s.room.id));
-        return prev;
-      });
+      setGreeting("");
+      setRoomStates(prev => { prev.forEach(s => loadRec(s.room.id)); return prev; });
     }, 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, [loadRec]);
 
-  // Minute tick — forces re-render so "X min ago" label stays current
+  // ── Minute tick (keeps "X min ago" fresh) ─────────────────────────────────
+
   const [, setTick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setTick(n => n + 1), 60 * 1000);
     return () => clearInterval(t);
   }, []);
 
+  // ── Delete room ────────────────────────────────────────────────────────────
+
   async function confirmDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await fetch(`/api/rooms/${deleteTarget.id}`,{method:"DELETE"});
-      setRoomStates(prev=>prev.filter(s=>s.room.id!==deleteTarget!.id));
+      await fetch(`/api/rooms/${deleteTarget.id}`, { method:"DELETE" });
+      setRoomStates(prev => prev.filter(s => s.room.id !== deleteTarget!.id));
       setDeleteTarget(null);
     } catch { setDeleteTarget(null); }
     finally { setDeleting(false); }
   }
 
-  return (
-    <div style={{minHeight:"100vh",background:"var(--bg)"}}>
-      {deleteTarget&&<DeleteModal roomName={deleteTarget.name} onConfirm={confirmDelete} onCancel={()=>setDeleteTarget(null)} deleting={deleting}/>}
-      <AppHeader right={<span style={{fontSize:13,color:"var(--muted)"}}>{decoded}</span>}/>
+  // ── Render ─────────────────────────────────────────────────────────────────
 
-      <main style={{maxWidth:640,margin:"0 auto",padding:"28px 20px 80px"}}>
-        <div style={{marginBottom:24}}>
-          <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",marginBottom:12}}>
+  const today   = todayDate();
+  const hour    = nowHour();
+  const hasTimeline = roomStates.some(s => s.rec?.bpSlots?.length);
+  const forecastSlots = roomStates.find(s => (s.rec?.forecastSlots?.length ?? 0) > 0)?.rec?.forecastSlots;
+
+  return (
+    <div style={{ minHeight:"100vh", background:"var(--bg)" }}>
+      {deleteTarget && (
+        <DeleteModal roomName={deleteTarget.name} onConfirm={confirmDelete} onCancel={() => setDeleteTarget(null)} deleting={deleting}/>
+      )}
+      <AppHeader right={<span style={{ fontSize:13, color:"var(--muted)" }}>{decoded}</span>}/>
+
+      <main style={{ maxWidth:640, margin:"0 auto", padding:"28px 20px 80px" }}>
+
+        {/* ── Page header ── */}
+        <div style={{ marginBottom:24 }}>
+          <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", marginBottom:12 }}>
             <div>
-              <h1 style={{fontFamily:"'Lora',serif",fontSize:28,fontWeight:600,color:"var(--navy)",letterSpacing:"-0.02em",marginBottom:2}}>Today</h1>
-              <p style={{fontSize:13,color:"var(--muted)"}}>{todayLabel()}</p>
+              <h1 style={{ fontFamily:"'Lora',serif", fontSize:28, fontWeight:600, color:"var(--navy)", letterSpacing:"-0.02em", marginBottom:2 }}>Today</h1>
+              <p style={{ fontSize:13, color:"var(--muted)" }}>{todayLabel()}</p>
             </div>
-            <Link href={`/setup?email=${encodeURIComponent(decoded)}`}
-              style={{fontSize:14,fontWeight:500,color:"var(--sky)",textDecoration:"none",padding:"9px 18px",background:"var(--sky-light)",borderRadius:"var(--radius-sm)",border:"1px solid var(--sky-mid)"}}>
+            <Link href={`/setup?email=${encodeURIComponent(decoded)}`} style={{ fontSize:14, fontWeight:500, color:"var(--sky)", textDecoration:"none", padding:"9px 18px", background:"var(--sky-light)", borderRadius:"var(--radius-sm)", border:"1px solid var(--sky-mid)" }}>
               + Add room
             </Link>
           </div>
 
-          {/* House recommendation — bold, one line */}
+          {/* House summary + greeting */}
           {houseLine && (
-            <div className="fade-up" style={{padding:"14px 18px",borderRadius:"var(--radius-md)",background:"var(--white)",border:"0.5px solid var(--border-mid)",boxShadow:"var(--shadow-sm)",marginBottom:10}}>
-              <p style={{fontSize:15,fontWeight:600,color:"var(--navy)",marginBottom:greeting?4:0}}>{houseLine}</p>
-              {greeting && <p style={{fontSize:13,color:"var(--muted)",lineHeight:1.5}}>{greeting}</p>}
+            <div className="fade-up" style={{ padding:"14px 18px", borderRadius:"var(--radius-md)", background:"var(--white)", border:"0.5px solid var(--border-mid)", boxShadow:"var(--shadow-sm)", marginBottom:10 }}>
+              <p style={{ fontSize:15, fontWeight:600, color:"var(--navy)", marginBottom:greeting?4:0 }}>{houseLine}</p>
+              {greeting && <p style={{ fontSize:13, color:"var(--muted)", lineHeight:1.5 }}>{greeting}</p>}
             </div>
           )}
 
-          {/* Forecast strip — shown once for the house */}
-          {(() => {
-            const first = roomStates.find(s=>s.rec?.forecastDays?.length);
-            if (!first?.rec?.forecastDays) return null;
-            return (
-              <ForecastStrip
-                slots={first.rec.forecastSlots ?? []}
-                today={todayDate()}
-                nowHour={nowHour()}
-              />
-            );
-          })()}
+          {/* 24-hour forecast strip */}
+          {forecastSlots && forecastSlots.length > 0 && (
+            <ForecastStrip slots={forecastSlots} today={today} nowHour={hour}/>
+          )}
         </div>
 
-        {pageLoading && <div style={{textAlign:"center",padding:"60px 0",color:"var(--muted)",fontSize:14}}>Loading…</div>}
-        {pageError  && <div style={{padding:"14px 18px",borderRadius:"var(--radius-md)",background:"var(--error-light)",color:"var(--error)",fontSize:14}}>{pageError}</div>}
-        {!pageLoading&&!pageError&&roomStates.length===0&&(
-          <div style={{textAlign:"center",padding:"80px 0"}}>
-            <p style={{fontSize:16,color:"var(--muted)",marginBottom:20}}>No rooms set up yet.</p>
-            <Link href={`/setup?email=${encodeURIComponent(decoded)}`} style={{color:"var(--sky)",fontSize:15,fontWeight:500,textDecoration:"none"}}>Set up your first room →</Link>
+        {/* ── Loading / error / empty states ── */}
+        {pageLoading && (
+          <div style={{ textAlign:"center", padding:"60px 0", color:"var(--muted)", fontSize:14 }}>Loading…</div>
+        )}
+        {pageError && (
+          <div style={{ padding:"14px 18px", borderRadius:"var(--radius-md)", background:"var(--error-light)", color:"var(--error)", fontSize:14 }}>{pageError}</div>
+        )}
+        {!pageLoading && !pageError && roomStates.length === 0 && (
+          <div style={{ textAlign:"center", padding:"80px 0" }}>
+            <p style={{ fontSize:16, color:"var(--muted)", marginBottom:20 }}>No rooms set up yet.</p>
+            <Link href={`/setup?email=${encodeURIComponent(decoded)}`} style={{ color:"var(--sky)", fontSize:15, fontWeight:500, textDecoration:"none" }}>
+              Set up your first room →
+            </Link>
           </div>
         )}
 
-        <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          {roomStates.map(state=>(
+        {/* ── Room cards ── */}
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          {roomStates.map(state => (
             <RoomCard
               key={state.room.id}
               state={state}
-              onRefresh={()=>loadRec(state.room.id)}
-              onDelete={()=>setDeleteTarget(state.room)}
-              onToggleNotif={v=>toggleNotif(state.room.id,v)}
+              today={today}
+              nowHour={hour}
+              onRefresh={() => loadRec(state.room.id)}
+              onDelete={() => setDeleteTarget(state.room)}
+              onToggleNotif={v => toggleNotif(state.room.id, v)}
             />
           ))}
         </div>
 
-        {/* ── Page legend ── */}
-        {roomStates.some(s=>s.rec?.bpSlots?.length) && (
-          <div style={{
-            marginTop:24, padding:"14px 18px",
-            borderRadius:"var(--radius-md)",
-            background:"var(--white)", border:"0.5px solid var(--border)",
-          }}>
-            <p style={{fontSize:11,fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>Timeline key</p>
-            <div style={{display:"flex",flexWrap:"wrap",gap:"10px 20px"}}>
-              {[
-                { color:"#93C5FD", label:"Cool (below balance point)" },
-                { color:"#A7F3D0", label:"Near balance point" },
-                { color:"#FCD34D", label:"Warm (above balance point)" },
-                { color:"#F87171", label:"Hot" },
-              ].map(({color,label})=>(
-                <div key={label} style={{display:"flex",alignItems:"center",gap:6}}>
-                  <div style={{width:14,height:10,borderRadius:3,background:color,flexShrink:0}}/>
-                  <span style={{fontSize:12,color:"var(--muted)"}}>{label}</span>
-                </div>
-              ))}
-              <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{width:8,height:8,borderRadius:"50%",background:"#16A34A",border:"1.5px solid white",boxShadow:"0 1px 3px rgba(0,0,0,0.2)",flexShrink:0}}/>
-                <span style={{fontSize:12,color:"var(--muted)"}}>Open window</span>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{width:8,height:8,borderRadius:"50%",background:"#DC2626",border:"1.5px solid white",boxShadow:"0 1px 3px rgba(0,0,0,0.2)",flexShrink:0}}/>
-                <span style={{fontSize:12,color:"var(--muted)"}}>Close window</span>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{width:8,height:8,borderRadius:"50%",background:"#1D4ED8",border:"1.5px solid white",boxShadow:"0 1px 3px rgba(0,0,0,0.2)",flexShrink:0}}/>
-                <span style={{fontSize:12,color:"var(--muted)"}}>Air out room (CO₂)</span>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{width:2,height:14,borderRadius:1,background:"rgba(0,0,0,0.35)",flexShrink:0}}/>
-                <span style={{fontSize:12,color:"var(--muted)"}}>Current hour</span>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* ── Timeline legend ── */}
+        {hasTimeline && <TimelineLegend/>}
       </main>
     </div>
   );

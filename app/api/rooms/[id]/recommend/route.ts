@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
+import { todayEastern as todayDateStr } from "@/lib/utils";
 import { db } from "@/lib/db";
 import { rooms, windows, exteriorWalls, recommendations, users } from "@/lib/schema";
 import { eq } from "drizzle-orm";
@@ -8,8 +9,6 @@ import { fetchForecast } from "@/lib/weather";
 import { generateRecommendation } from "@/lib/recommendation";
 import { generateAiringRecommendations } from "@/lib/airing";
 import type { RoomFull } from "@/lib/schema";
-
-function todayDateStr() { return new Date().toISOString().slice(0, 10); }
 
 export async function POST(
   _req: NextRequest,
@@ -71,11 +70,16 @@ export async function POST(
     airingWindows: JSON.stringify(airing.windows),
     bpRange:       JSON.stringify(bpRange),
     reasoning:     result.reasoning,
-    // Store forecast context so GET cache can return it
+    // Store everything needed for the cached GET to return full dashboard data
     forecastMeta:  JSON.stringify({
       cityName: forecast.cityName,
       highF:    forecast.days[0]?.highF ?? null,
       lowF:     forecast.days[0]?.lowF  ?? null,
+      bpSlots,
+      slots: forecast.days.flatMap(d => d.slots.map(s => ({
+        date: d.date, hour: s.hour, ts: s.ts,
+        precipProb: s.precipProb, tempF: s.tempF, humidity: s.humidity,
+      }))),
     }),
   };
 
@@ -128,9 +132,11 @@ export async function GET(
     recommendation: { ...todayRec, openPeriods, airingWindows },
     airing: airingWindows ? { needsAiring:true, windows:airingWindows, intervalMins:0, summary:"" } : null,
     bpRange,
+    bpSlots:  forecastMeta?.bpSlots  ?? null,
     forecast: forecastMeta ? {
       cityName: forecastMeta.cityName,
       days: [{ date: today, highF: forecastMeta.highF, lowF: forecastMeta.lowF }],
+      slots: forecastMeta.slots ?? [],
     } : null,
   });
 }

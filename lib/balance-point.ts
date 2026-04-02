@@ -1,24 +1,60 @@
-import { inferRoomType, slotHeatRate, peopleCountForSlot } from "./room-profile";
+/**
+ * Balance Point Engine
+ * ====================
+ * T_balance = T_setpoint − Q_internal / UA_total
+ *
+ * All heat load calculations use occupancy.ts as the single source of truth.
+ * People heat is treated as absolute BTU/hr (ASHRAE 250/person) divided by
+ * floor area — so room size correctly reduces the per-ft² rate.
+ *
+ * Physics references:
+ *   Wall U: ASHRAE 90.1-2019 Table A2.3 (CZ 4A)
+ *   Ceiling U: ASHRAE 90.1-2019 Table A5 — R-38 code (U=0.026), below-code R-19 (U=0.052)
+ *   Window U/SHGC: NFRC typical values
+ *   ACH: Building Science Corporation, natural infiltration estimates
+ */
+
 import type { RoomFull, InsulationLevel, GlazingType, WindowSize, Orientation } from "./schema";
-import { parseBlocks } from "./occupancy";
+import {
+  parseBlocks, inferRoomType,
+  equipmentHeatRate, peopleHeatBtu,
+  averageWeeklyHeatRate,
+} from "./occupancy";
 import {
   windowSolarGain, wallSolarGain, roofSolarGain, ceilingUA,
   type WindowInput, type WallInput,
 } from "./solar";
 
+// ── U-values and constants ────────────────────────────────────────────────────
+
 export const HEAT_SOURCE_RATE: Record<string, number> = {
   MINIMAL: 0.5, LIGHT_ELECTRONICS: 1.5, HOME_OFFICE: 3.0, KITCHEN_LAUNDRY: 5.0,
 };
 
+/** Wall U-values (BTU/hr·ft²·°F) — ASHRAE 90.1-2019 CZ4A */
 const WALL_U: Record<InsulationLevel, number> = {
-  BELOW_CODE: 0.10, AT_CODE: 0.065, ABOVE_CODE: 0.040,
+  BELOW_CODE: 0.10,   // 2×4 stud, R-11 batt ≈ R-13 eff → U~0.10
+  AT_CODE:    0.065,  // 2×6 stud, R-21 batt ≈ R-15 eff → U~0.065
+  ABOVE_CODE: 0.040,  // dense-pack + continuous → R-25+ → U~0.040
 };
+
+/** Natural infiltration ACH — Building Science Corp residential estimates */
 const ACH: Record<InsulationLevel, number> = {
-  BELOW_CODE: 0.50, AT_CODE: 0.35, ABOVE_CODE: 0.20,
+  BELOW_CODE: 0.60,   // pre-1980 / minimal sealing
+  AT_CODE:    0.35,   // standard code construction
+  ABOVE_CODE: 0.20,   // tight / blower-door tested
 };
+
+/**
+ * Window U-values (BTU/hr·ft²·°F) — NFRC typical
+ * SHGC corrected: modern double low-e ≈ 0.27, not 0.40
+ */
 const WINDOW_U: Record<GlazingType, number> = {
-  SINGLE: 0.90, DOUBLE: 0.30, TRIPLE: 0.15,
+  SINGLE: 0.90,   // single clear
+  DOUBLE: 0.30,   // double low-e (standard modern)
+  TRIPLE: 0.15,   // triple low-e
 };
+
 const WINDOW_AREA: Record<WindowSize, number> = {
   SMALL: 4, MEDIUM: 10, LARGE: 20,
 };
@@ -28,6 +64,8 @@ export interface BalancePointResult {
   uaWalls: number; uaWindows: number; uaInfiltration: number;
   uaCeiling: number; uaTotal: number; floorArea: number; volume: number;
 }
+
+// ── Geometry helpers ──────────────────────────────────────────────────────────
 
 function wallGrossArea(face: string, len: number, wid: number, ceil: number, orient: Orientation): number {
   const isLengthFace = orient === "NS" ? (face==="E"||face==="W") : (face==="N"||face==="S");
@@ -43,27 +81,27 @@ function buildWindowInputs(room: RoomFull): WindowInput[] {
 }
 
 function buildWallInputs(room: RoomFull): WallInput[] {
-  const windowAreaByFace: Partial<Record<string, number>> = {};
+  const winAreaByFace: Partial<Record<string, number>> = {};
   for (const w of (room.windows ?? [])) {
-    windowAreaByFace[w.direction] = (windowAreaByFace[w.direction] ?? 0) + WINDOW_AREA[w.size as WindowSize];
+    winAreaByFace[w.direction] = (winAreaByFace[w.direction] ?? 0) + WINDOW_AREA[w.size as WindowSize];
   }
   return (room.exteriorWalls ?? []).map(wall => {
     const gross = wallGrossArea(wall.direction, room.lengthFt, room.widthFt, room.ceilingHeightFt, room.orientation as Orientation);
-    const net   = Math.max(0, gross - (windowAreaByFace[wall.direction] ?? 0));
     return {
       direction: wall.direction as import("./schema").Direction,
-      areaSqFt:  net,
+      areaSqFt:  Math.max(0, gross - (winAreaByFace[wall.direction] ?? 0)),
       color:     (room.wallColor ?? "MEDIUM") as import("./schema").SurfaceColor,
     };
   });
 }
 
-// ── Slot-level UA (doesn't change hour-to-hour) ──────────────────────────────
-
-function computeUA(room: RoomFull): { uaWalls:number; uaWindows:number; uaInfiltration:number; uaCeiling:number; uaTotal:number } {
-  const { lengthFt, widthFt, ceilingHeightFt, insulationLevel, isTopFloor } = room;
-  const floorArea = lengthFt * widthFt;
-  const volume    = floorArea * ceilingHeightFt;
+function computeUA(room: RoomFull): {
+  uaWalls: number; uaWindows: number; uaInfiltration: number;
+  uaCeiling: number; uaTotal: number;
+} {
+  const { insulationLevel, isTopFloor } = room;
+  const floorArea = room.lengthFt * room.widthFt;
+  const volume    = floorArea * room.ceilingHeightFt;
 
   const windowInputs = buildWindowInputs(room);
   const uaWindows    = windowInputs.reduce((s, w) => s + w.areaSqFt * WINDOW_U[w.glazingType], 0);
@@ -78,31 +116,16 @@ function computeUA(room: RoomFull): { uaWalls:number; uaWindows:number; uaInfilt
   return { uaWalls, uaWindows, uaInfiltration, uaCeiling, uaTotal: uaWalls + uaWindows + uaInfiltration + uaCeiling };
 }
 
-// ── Weekly-average balance point ─────────────────────────────────────────────
+// ── Weekly-average balance point (stored scalar) ──────────────────────────────
 
 export function calculateBalancePoint(room: RoomFull): BalancePointResult {
   const floorArea = room.lengthFt * room.widthFt;
   const volume    = floorArea * room.ceilingHeightFt;
   const blocks    = parseBlocks(room);
-  const baseRate  = HEAT_SOURCE_RATE[room.heatSourceLevel] ?? 1.5;
-  const roomType  = inferRoomType(room.name, room.heatSourceLevel as import("./schema").HeatSourceLevel);
 
-  const BASE_PEOPLE_RATE: Record<string, number> = { EMPTY:0, ONE_TWO:3.5, THREE_FOUR:5.5 };
-  const basePeopleRate = BASE_PEOPLE_RATE[room.occupancyLevel] ?? 3.5;
-
-  // Average over all 168 weekly slots (no solar in weekly average — uses solar separately per slot)
-  let totalRate = 0;
-  for (let day = 0; day < 7; day++) {
-    for (let hour = 0; hour < 24; hour++) {
-      const equipRate  = slotHeatRate(room, roomType, blocks, day, hour, baseRate);
-      const people     = peopleCountForSlot(room, roomType, blocks, day, hour);
-      const basePeople = room.occupancyLevel === "THREE_FOUR" ? 3.5 : 1.5;
-      const peopleRate = basePeople > 0 ? (people / basePeople) * basePeopleRate : 0;
-      totalRate += equipRate + peopleRate;
-    }
-  }
-  const avgHeatRate = totalRate / 168;
-  const qInternal   = avgHeatRate * floorArea;
+  // Fixed Issue #1: people heat as absolute BTU/hr ÷ floor area (not flat rate × area)
+  const avgHeatRate = averageWeeklyHeatRate(room, blocks, floorArea);
+  const qInternal   = avgHeatRate * floorArea;  // total BTU/hr
 
   const { uaWalls, uaWindows, uaInfiltration, uaCeiling, uaTotal } = computeUA(room);
   if (uaTotal === 0) return { balancePoint: room.maxTempF, qInternal:0, uaWalls:0, uaWindows:0, uaInfiltration:0, uaCeiling:0, uaTotal:0, floorArea, volume };
@@ -121,29 +144,24 @@ export function calculateBalancePoint(room: RoomFull): BalancePointResult {
   };
 }
 
-// ── Per-slot balance point (used for hourly recommendations) ─────────────────
+// ── Per-slot balance point (used by recommendation engine) ────────────────────
 
 export function balancePointForSlot(
-  room:      RoomFull,
-  dayOfWeek: number,
-  hour:      number,
-  bias:      number = 0,
+  room:       RoomFull,
+  dayOfWeek:  number,
+  hour:       number,
+  bias:       number = 0,
   precipProb: number = 0,
 ): number {
   const floorArea = room.lengthFt * room.widthFt;
   const blocks    = parseBlocks(room);
-  const baseRate  = HEAT_SOURCE_RATE[room.heatSourceLevel] ?? 1.5;
-  const roomType  = inferRoomType(room.name, room.heatSourceLevel as import("./schema").HeatSourceLevel);
+  const roomType  = inferRoomType(room.name, room.heatSourceLevel);
 
-  // Equipment + people heat for this slot
-  const equipRate  = slotHeatRate(room, roomType, blocks, dayOfWeek, hour, baseRate);
-  const people     = peopleCountForSlot(room, roomType, blocks, dayOfWeek, hour);
-  const basePeople = room.occupancyLevel === "THREE_FOUR" ? 3.5 : 1.5;
-  const BASE_PEOPLE_RATE: Record<string, number> = { EMPTY:0, ONE_TWO:3.5, THREE_FOUR:5.5 };
-  const basePRate  = BASE_PEOPLE_RATE[room.occupancyLevel] ?? 3.5;
-  const peopleRate = basePeople > 0 ? (people / basePeople) * basePRate : 0;
+  // Fixed Issue #1: people heat as BTU/hr total, divided by area
+  const equip  = equipmentHeatRate(room, blocks, roomType, dayOfWeek, hour);
+  const people = peopleHeatBtu(room, blocks, roomType, dayOfWeek, hour) / floorArea;
 
-  // Solar gains this slot
+  // Solar gains
   const windowInputs = buildWindowInputs(room);
   const wallInputs   = buildWallInputs(room);
   const solarW  = windowSolarGain(windowInputs, hour, precipProb);
@@ -155,11 +173,11 @@ export function balancePointForSlot(
     hour, precipProb,
   );
 
-  const qInternal = ((equipRate + peopleRate) * floorArea) + solarW + solarWl + solarR;
+  // Total heat: equipment + people both per ft², plus solar totals divided by area
+  const qInternal = (equip + people) * floorArea + solarW + solarWl + solarR;
 
   const { uaTotal } = computeUA(room);
   if (uaTotal === 0) return room.maxTempF - bias;
 
-  const rawBP = room.maxTempF - qInternal / uaTotal;
-  return Math.round((rawBP - bias) * 10) / 10;
+  return Math.round((room.maxTempF - qInternal / uaTotal - bias) * 10) / 10;
 }

@@ -20,11 +20,12 @@ import type { SurfaceColor, RoofType, GlazingType, Direction } from "./schema";
 // Peak clear-sky irradiance at noon (BTU/hr·ft²)
 const PEAK_IRRADIANCE = 250;
 
-// SHGC by glazing type (fraction of solar energy transmitted)
+// SHGC by glazing type — NFRC typical values
+// DOUBLE corrected from 0.40 (clear, old) to 0.27 (modern low-e)
 const SHGC: Record<GlazingType, number> = {
-  SINGLE: 0.86,
-  DOUBLE: 0.40,
-  TRIPLE: 0.27,
+  SINGLE: 0.86,   // single clear — no coating
+  DOUBLE: 0.27,   // double low-e — standard modern install
+  TRIPLE: 0.20,   // triple low-e — high performance
 };
 
 // Solar absorptivity by surface color
@@ -150,10 +151,16 @@ export function roofSolarGain(
 
 // ── Ceiling UA (replaces flat floor penalty) ──────────────────────────────────
 
+/**
+ * Ceiling U-values (BTU/hr·ft²·°F) — ASHRAE 90.1-2019 CZ4A
+ * BELOW_CODE: older homes typically R-19 → U ≈ 0.052
+ * AT_CODE:    R-38 required in CZ4A → U ≈ 0.026
+ * ABOVE_CODE: R-49+ → U ≈ 0.020
+ */
 const CEILING_U: Record<string, number> = {
-  BELOW_CODE: 0.075,
-  AT_CODE:    0.045,
-  ABOVE_CODE: 0.025,
+  BELOW_CODE: 0.052,
+  AT_CODE:    0.026,
+  ABOVE_CODE: 0.020,
 };
 
 /**

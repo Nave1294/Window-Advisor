@@ -15,6 +15,7 @@ export interface DayTimelineProps {
   bpSlots:       BpSlot[];
   today:         string;
   nowHour:       number;
+  co2IntervalMins?: number;  // from airing engine — room-specific CO2 rise rate
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -72,7 +73,7 @@ const LH  = 26;   // label row height px
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function DayTimeline({ slots, openPeriods, airingWindows, bpSlots, today, nowHour }: DayTimelineProps) {
+export function DayTimeline({ slots, openPeriods, airingWindows, bpSlots, today, nowHour, co2IntervalMins }: DayTimelineProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -96,14 +97,17 @@ export function DayTimeline({ slots, openPeriods, airingWindows, bpSlots, today,
   const tempByHour: Record<number,number> = {};
   for (const s of slots) tempByHour[s.hour] = s.tempF;
 
-  // CO₂ accumulation — resets at airing slots
+  // CO₂ accumulation driven by actual room interval from airing engine
+  // ppm rise per hour = 600 ppm / intervalMins × 60
+  const interval    = co2IntervalMins ?? 120;
+  const ppmPerHour  = Math.round((600 / interval) * 60);
   const airingHours = new Set(airingWindows.filter(w=>w.date===today).map(w=>w.hour));
   const co2ByHour: Record<number,number> = {};
   let ppm = 0;
   for (const h of hours) {
-    if (airingHours.has(h)) ppm = Math.max(0, ppm - 450);
-    co2ByHour[h] = ppm;
-    ppm = Math.min(800, ppm + 22);
+    if (airingHours.has(h)) ppm = Math.max(0, ppm - 500);
+    co2ByHour[h] = Math.min(800, ppm);
+    ppm = Math.min(800, ppm + ppmPerHour);
   }
 
   // Transition dots
@@ -133,11 +137,12 @@ export function DayTimeline({ slots, openPeriods, airingWindows, bpSlots, today,
         {/* ── Temp bar ── */}
         <div style={{ position:"absolute", top:0, left:0, right:0, height:BH, display:"flex", borderRadius:8, overflow:"hidden" }}>
           {hours.map(h => {
-            const temp = tempByHour[h] ?? bpByHour[h];
+            const hasData = h in tempByHour;
+            const temp = tempByHour[h] ?? null;
             const bp   = bpByHour[h];
-            const bg   = tempBarColor(temp, bp);
+            const bg   = hasData && temp !== null ? tempBarColor(temp, bp) : "var(--border)";
             return (
-              <div key={h} style={{ width:CW, height:BH, background:bg, position:"relative", flexShrink:0 }}>
+              <div key={h} style={{ width:CW, height:BH, background:bg, position:"relative", flexShrink:0, opacity: hasData ? 1 : 0.35 }}>
                 {/* Open dot */}
                 {openDotHours.includes(h) && (
                   <div style={{

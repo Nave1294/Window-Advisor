@@ -3,18 +3,12 @@ import { db } from "./db";
 import { users, rooms, recommendations } from "./schema";
 import { eq } from "drizzle-orm";
 import { Resend } from "resend";
+import { todayEastern, nowHourEastern } from "./utils";
 import type { OpenPeriod } from "./recommendation";
 
 function client() { return new Resend(process.env.RESEND_API_KEY ?? ""); }
 function from()   { return process.env.RESEND_FROM_EMAIL ?? "Window Advisor <onboarding@resend.dev>"; }
 function appUrl() { return process.env.APP_URL ?? "https://your-app.up.railway.app"; }
-
-function todayEastern() {
-  return new Date().toLocaleDateString("en-CA", { timeZone:"America/New_York" });
-}
-function nowHourEastern() {
-  return parseInt(new Date().toLocaleString("en-US", { hour:"numeric", hour12:false, timeZone:"America/New_York" }));
-}
 
 function parseHour(timeStr: string): number {
   const clean = timeStr.replace(":00","").trim();
@@ -120,40 +114,41 @@ export async function runNotificationCheck(): Promise<{ sent:number; checked:num
       const openPeriods: OpenPeriod[] = todayRec.openPeriods ? JSON.parse(todayRec.openPeriods) : [];
       if (!openPeriods.length) continue;
 
+      // Parse forecast data stored with recommendation
+      const forecastMeta = todayRec.forecastMeta ? JSON.parse(todayRec.forecastMeta) : null;
+      const highF = forecastMeta?.highF ?? 70;
+      const lowF  = forecastMeta?.lowF  ?? 55;
+
       // Don't re-notify within 4 hours
       const fourHoursAgo = Date.now() - 4 * 60 * 60 * 1000;
       const lastOpen  = room.lastNotifiedOpen  ? new Date(room.lastNotifiedOpen).getTime()  : 0;
       const lastClose = room.lastNotifiedClose ? new Date(room.lastNotifiedClose).getTime() : 0;
 
-      // Check if a window is OPENING in the next hour
-      const opening = openPeriods.find(p => {
-        const startH = parseHour(p.from);
-        return startH === nowHour || startH === nowHour + 1;
-      });
+      // Fire open notification when a window starts in the NEXT hour (advance notice)
+      // Only matches nowHour+1 — not nowHour — so each open fires exactly once
+      const opening = openPeriods.find(p => parseHour(p.from) === nowHour + 1);
 
-      // Check if a window is CLOSING in the next hour
-      const closing = openPeriods.find(p => {
-        const endH = parseHour(p.to);
-        return endH === nowHour || endH === nowHour + 1;
-      });
+      // Fire close notification when a window ends THIS hour (it's ending now)
+      // Only matches nowHour — not nowHour+1 — so each close fires exactly once
+      const closing = !opening && openPeriods.find(p => parseHour(p.to) === nowHour);
 
       if (opening && lastOpen < fourHoursAgo) {
         const body = await generateMessage({
           roomName:room.name, action:"open",
           reasoning:todayRec.reasoning,
-          highF:70, lowF:55, balancePoint:room.balancePoint,
+          highF, lowF, balancePoint:room.balancePoint,
           until: opening.to,
         });
         await sendNotification({ to:user.email, roomName:room.name, action:"open", body, email:user.email });
         await db.update(rooms).set({ lastNotifiedOpen:nowISO }).where(eq(rooms.id, room.id));
         console.log(`[notify] Open notification sent to ${user.email} for ${room.name}`);
         sent++;
-      } else if (closing && !opening && lastClose < fourHoursAgo) {
+      } else if (closing && lastClose < fourHoursAgo) {
         const nextOpen = openPeriods.find(p => parseHour(p.from) > nowHour);
         const body = await generateMessage({
           roomName:room.name, action:"close",
           reasoning:todayRec.reasoning,
-          highF:70, lowF:55, balancePoint:room.balancePoint,
+          highF, lowF, balancePoint:room.balancePoint,
           until: nextOpen ? `from ${nextOpen.from}` : undefined,
         });
         await sendNotification({ to:user.email, roomName:room.name, action:"close", body, email:user.email });

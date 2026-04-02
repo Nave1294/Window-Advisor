@@ -1,17 +1,30 @@
+/**
+ * CO₂ Airing Engine
+ * ==================
+ * Calculates when and how often to briefly open windows to flush CO₂.
+ *
+ * Uses occupancy.ts (canonical) for people count per slot.
+ * CO₂ rise rate = (people × exhaled_rate) / room_volume
+ * Interval = target_rise / rise_rate
+ *
+ * Physics: ASHRAE 62.1-2022
+ *   - Exhaled CO₂: ~0.26 L/min per sedentary adult
+ *   - Acceptable indoor CO₂: ≤ 1000 ppm (600 ppm above 400 ppm outdoor)
+ */
+
 import type { Room } from "./schema";
 import type { DayForecast, HourlySlot } from "./weather";
-import { parseBlocks, isUnoccupied } from "./occupancy";
-import { inferRoomType, peopleCountForSlot } from "./room-profile";
+import { parseBlocks, isUnoccupied, inferRoomType, peopleCountForSlot } from "./occupancy";
 
-const CO2_EXHALED_L_PER_MIN   = 0.24;
-const FT3_TO_LITERS           = 28.317;
-const CO2_PPM_TARGET_RISE     = 600;
-const AIRING_DURATION_MIN     = 12;
-const WAKING_HOUR_START       = 7;
-const WAKING_HOUR_END         = 22;
-const PRECIP_AIRING_CUTOFF    = 0.50;
-const MIN_AIRING_INTERVAL_MIN = 20;
-const MAX_AIRING_INTERVAL_MIN = 180;
+const CO2_EXHALED_L_PER_MIN   = 0.26;   // ASHRAE 62.1 — sedentary adult
+const FT3_TO_LITERS            = 28.317;
+const CO2_PPM_TARGET_RISE      = 600;    // 400 outdoor → 1000 ppm target
+const AIRING_DURATION_MIN      = 12;
+const WAKING_HOUR_START        = 7;
+const WAKING_HOUR_END          = 22;
+const PRECIP_AIRING_CUTOFF     = 0.50;
+const MIN_AIRING_INTERVAL_MIN  = 20;
+const MAX_AIRING_INTERVAL_MIN  = 180;
 
 export interface AiringWindow {
   date:         string;
@@ -46,16 +59,16 @@ function fmtRange(startHour: number, durationMin: number): string {
 }
 
 function disruptionScore(slot: HourlySlot, room: Room, balancePt: number): number {
-  if (slot.precipProb >= PRECIP_AIRING_CUTOFF) return 999;
   const tempDelta    = Math.abs(slot.tempF - balancePt);
   const humidPenalty = slot.humidity > room.maxHumidity ? (slot.humidity - room.maxHumidity) * 0.5 : 0;
   const dewPenalty   = slot.dewPointF > 62 ? (slot.dewPointF - 62) * 1.5 : 0;
-  return tempDelta + humidPenalty + dewPenalty;
+  const rainPenalty  = slot.precipProb >= PRECIP_AIRING_CUTOFF ? 50 : 0;
+  return tempDelta + humidPenalty + dewPenalty + rainPenalty;
 }
 
 function disruptionLabel(score: number): "low" | "moderate" | "high" {
   if (score < 8)  return "low";
-  if (score < 18) return "moderate";
+  if (score < 20) return "moderate";
   return "high";
 }
 
@@ -81,7 +94,7 @@ export function generateAiringRecommendations(
   balancePt: number,
 ): AiringResult {
   const blocks   = parseBlocks(room);
-  const roomType = inferRoomType(room.name, room.heatSourceLevel as import("./schema").HeatSourceLevel);
+  const roomType = inferRoomType(room.name, room.heatSourceLevel);
   const volumeL  = room.lengthFt * room.widthFt * room.ceilingHeightFt * FT3_TO_LITERS;
 
   const windows: AiringWindow[] = [];
@@ -95,35 +108,35 @@ export function generateAiringRecommendations(
       const dow      = slotDate.getUTCDay();
       if (isUnoccupied(blocks, dow, slot.hour)) continue;
 
-      // Context-aware people count for this slot
-      const people = peopleCountForSlot(room, roomType, blocks, dow, slot.hour);
+      // People count for this slot (canonical occupancy module)
+      const people = peopleCountForSlot(room, blocks, roomType, dow, slot.hour);
       if (people === 0) continue;
 
-      // CO2 interval for this slot
-      const riseRate    = (people * CO2_EXHALED_L_PER_MIN / volumeL) * 1_000_000;
-      const rawInterval = CO2_PPM_TARGET_RISE / riseRate;
+      // CO₂ interval for this slot
+      const riseRate     = (people * CO2_EXHALED_L_PER_MIN / volumeL) * 1_000_000;
+      const rawInterval  = CO2_PPM_TARGET_RISE / riseRate;
       const slotInterval = Math.min(MAX_AIRING_INTERVAL_MIN, Math.max(MIN_AIRING_INTERVAL_MIN, Math.round(rawInterval / 5) * 5));
 
       const score = disruptionScore(slot, room, balancePt);
-      // Always include — even rainy slots are candidates (least-bad fallback)
       candidates.push({ slot, score, intervalMins: slotInterval });
     }
 
     if (!candidates.length) continue;
     candidates.sort((a, b) => a.score - b.score);
 
-    // Use the median interval for this day to determine how many slots to show
+    // Use median interval to decide how many slots to suggest
     const medianInterval = candidates[Math.floor(candidates.length / 2)].intervalMins;
-    const occupiedWakingSlots = candidates.length;
-    const occupiedWakingMins  = occupiedWakingSlots * 180;
-    const suggestCount        = Math.max(1, Math.min(4, Math.floor(occupiedWakingMins / medianInterval)));
+    const occupiedMins   = candidates.length * 180; // 3h per OWM slot
+    const suggestCount   = Math.max(1, Math.min(3, Math.floor(occupiedMins / medianInterval)));
 
+    // Pick best non-overlapping slots
     const picked: typeof candidates = [];
     const minGapH = Math.max(1, Math.floor(medianInterval / 60));
     for (const c of candidates) {
       if (picked.length >= suggestCount) break;
       if (!picked.some(p => Math.abs(p.slot.hour - c.slot.hour) < minGapH)) picked.push(c);
     }
+    // Fallback — fill remaining if gap constraint left us short
     for (const c of candidates) {
       if (picked.length >= Math.min(suggestCount, 2)) break;
       if (!picked.includes(c)) picked.push(c);
@@ -141,21 +154,15 @@ export function generateAiringRecommendations(
     }
   }
 
-  // Summary uses the most common interval
-  const allIntervals = windows.map(w => w.intervalMins);
-  const medInterval  = allIntervals.length
-    ? allIntervals.sort((a,b)=>a-b)[Math.floor(allIntervals.length/2)]
+  const intervals = windows.map(w => w.intervalMins);
+  const medInterval = intervals.length
+    ? intervals.sort((a,b)=>a-b)[Math.floor(intervals.length/2)]
     : MAX_AIRING_INTERVAL_MIN;
 
-  const levelLabel = room.occupancyLevel === "THREE_FOUR" ? "3–4 people" : "1–2 people";
-  const vol        = Math.round(room.lengthFt * room.widthFt * room.ceilingHeightFt).toLocaleString();
-  const intLabel   = medInterval < 60 ? `every ${medInterval} min` : medInterval === 60 ? "every hour" : `every ${(medInterval/60).toFixed(1).replace(".0","")} hr`;
-  const summary    = `With ${levelLabel} in a ${vol} ft³ room, CO₂ reaches concerning levels ${intLabel}. ${AIRING_DURATION_MIN}-min ventilation is suggested during occupied hours.`;
+  const occ      = room.occupancyLevel === "THREE_FOUR" ? "3–4 people" : "1–2 people";
+  const vol      = Math.round(room.lengthFt * room.widthFt * room.ceilingHeightFt).toLocaleString();
+  const intLabel = medInterval < 60 ? `every ${medInterval} min` : medInterval === 60 ? "every hour" : `every ${(medInterval/60).toFixed(1).replace(".0","")} hr`;
+  const summary  = `With ${occ} in a ${vol} ft³ room, CO₂ reaches 1,000 ppm ${intLabel}. ${AIRING_DURATION_MIN}-min ventilation is suggested during occupied hours.`;
 
-  return {
-    intervalMins: medInterval,
-    windows,
-    summary,
-    needsAiring: windows.length > 0,
-  };
+  return { intervalMins: medInterval, windows, summary, needsAiring: windows.length > 0 };
 }

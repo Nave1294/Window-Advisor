@@ -1,13 +1,13 @@
 import type { Room } from "./schema";
 import type { DayForecast, HourlySlot } from "./weather";
 import { degToCardinal } from "./weather";
-import { parseBlocks, HEAT_SOURCE_RATE } from "./occupancy";
+import { parseBlocks } from "./occupancy";
 import { balancePointForSlot } from "./balance-point";
 
 const OPEN_THRESHOLD     = 55;
 const PRECIP_HARD_CUTOFF = 0.40;
 const DEW_POINT_CEILING  = 65;
-const MIN_OPEN_SLOTS     = 1;
+const MIN_OPEN_SLOTS     = 2;   // require at least 6h (2×3h slots) of good conditions
 const COMFORT_BIAS_CAP   = 5;
 
 export interface OpenPeriod { from: string; to: string; reason: string; multiDay: boolean; startDate: string; }
@@ -95,18 +95,16 @@ export function generateRecommendation(
   const today = days[0]?.date ?? new Date().toISOString().slice(0,10);
   const bias   = Math.max(-COMFORT_BIAS_CAP, Math.min(COMFORT_BIAS_CAP, room.comfortBias ?? 0));
   const blocks = parseBlocks(room);
-  void HEAT_SOURCE_RATE; // imported for legacy compat
 
   // Score all slots across all days using per-slot balance point
-  const allScored: { slot:HourlySlot; date:string; score:number; open:boolean; blocked:string|null }[] = [];
+  const allScored: { slot:HourlySlot; date:string; score:number; open:boolean; blocked:string|null; slotBP:number }[] = [];
 
   for (const day of days) {
     for (const slot of day.slots) {
-      const dow      = new Date(slot.ts * 1000).getUTCDay();
-      // Per-slot balance point accounts for time-of-day and day-of-week heat load
-      const slotBP  = balancePointForSlot(room as never, dow, slot.hour, bias, slot.precipProb);
+      const dow    = new Date(slot.ts * 1000).getUTCDay();
+      const slotBP = balancePointForSlot(room as never, dow, slot.hour, bias, slot.precipProb);
       const { score, blocked } = scoreSlot(slot, room, slotBP);
-      allScored.push({ slot, date: day.date, score, open: score >= OPEN_THRESHOLD, blocked });
+      allScored.push({ slot, date: day.date, score, open: score >= OPEN_THRESHOLD, blocked, slotBP });
     }
   }
 
@@ -130,7 +128,7 @@ export function generateRecommendation(
     openPeriods.push({
       from:      fmtSlotLabel(runStart.date, runStart.slot.hour, spansDays),
       to:        fmtSlotLabel(endDate, endHour===0?0:endHour, spansDays),
-      reason:    buildReason(runSlots, room, room.balancePoint ?? room.maxTempF - 20),
+      reason:    buildReason(runSlots, room, runStart.slotBP),
       multiDay:  spansDays,
       startDate: runStart.date,
     });
@@ -175,6 +173,6 @@ export function generateRecommendation(
 
   return {
     shouldOpen, openPeriods, reasoning,
-    slotScores: allScored.map(s => ({ date:s.date, hour:s.slot.hour, score:s.score, open:s.open })),
+    slotScores: allScored.map(s => ({ date:s.date, hour:s.slot.hour, score:s.score, open:s.open, slotBP:s.slotBP })),
   };
 }

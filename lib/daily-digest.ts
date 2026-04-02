@@ -1,3 +1,4 @@
+import { todayEastern } from "./utils";
 import { db } from "./db";
 import { users, rooms, windows, exteriorWalls, recommendations } from "./schema";
 import { eq } from "drizzle-orm";
@@ -7,15 +8,13 @@ import { generateAiringRecommendations } from "./airing";
 import { sendDailyEmail, type RoomDigest } from "./email";
 import type { RoomFull } from "./schema";
 
-function todayDateStr() { return new Date().toISOString().slice(0, 10); }
-
 export interface DigestResult {
   usersProcessed: number; roomsProcessed: number; emailsSent: number;
   errors: { userId: string; email: string; error: string }[];
 }
 
 export async function runDailyDigest(): Promise<DigestResult> {
-  const today    = todayDateStr();
+  const today    = todayEastern();
   const allUsers = await db.select().from(users);
   let roomsProcessed = 0, emailsSent = 0;
   const errors: DigestResult["errors"] = [];

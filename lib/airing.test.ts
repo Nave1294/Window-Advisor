@@ -10,7 +10,7 @@ function makeRoom(overrides: Partial<Room>={}): Room {
     floorNumber:1,isTopFloor:false,
     lengthFt:15,widthFt:12,ceilingHeightFt:8,
     orientation:"NS",insulationLevel:"AT_CODE",glazingType:"DOUBLE",hasCrossBreeze:false,
-    occupancyLevel:"ONE_TWO", unoccupiedBlocks:"[]",
+    occupancyLevel:"ONE_TWO",unoccupiedBlocks:"[]",
     heatSourceLevel:"LIGHT_ELECTRONICS",
     minTempF:68,maxTempF:74,minHumidity:40,maxHumidity:55,
     balancePoint:41,comfortBias:0,
@@ -30,8 +30,27 @@ function day(date:string,slots:HourlySlot[]):DayForecast {
   return {date,slots,highF:Math.max(...t),lowF:Math.min(...t),maxHumidity:50,maxPrecipProb:0.05,maxWindMph:5};
 }
 
-{const sm=makeRoom({lengthFt:10,widthFt:10,ceilingHeightFt:8});const lg=makeRoom({lengthFt:20,widthFt:20,ceilingHeightFt:9});const d=day("2025-06-16",[slot(0),slot(3),slot(6)]);const rS=generateAiringRecommendations(sm,[d],41);const rL=generateAiringRecommendations(lg,[d],41);console.log("T1 interval scales:",rL.intervalMins>rS.intervalMins?"✅":"❌");}
-{const r=makeRoom({occupancyLevel:"EMPTY"});const d=day("2025-06-16",[slot(0)]);const res=generateAiringRecommendations(r,[d],41);console.log("T2 empty→no airing:",!res.needsAiring?"✅":"❌");}
-// T3: rain slots are now always included as least-bad options — needsAiring can still be true
-{const r=makeRoom();const d=day("2025-06-16",[slot(0,{precipProb:0.9}),slot(3,{precipProb:0.8}),slot(6,{precipProb:0.7})]);const res=generateAiringRecommendations(r,[d],41);console.log("T3 rain→slots marked high-impact:",res.windows.every(w=>w.disruption==="high")?"✅":"❌");}
-{const kitchen=makeRoom({name:"Kitchen",heatSourceLevel:"KITCHEN_LAUNDRY"});const living=makeRoom({name:"Living Room",heatSourceLevel:"LIGHT_ELECTRONICS"});const d=day("2025-06-16",[slot(11,{tempF:62})]);const rK=generateAiringRecommendations(kitchen,[d],41);const rL=generateAiringRecommendations(living,[d],41);console.log("T4 kitchen/living both have options:",rK.needsAiring||rL.needsAiring?"✅":"❌");}
+// T1: larger room → longer interval (same people, more air)
+{const sm=makeRoom({lengthFt:10,widthFt:10});const lg=makeRoom({lengthFt:20,widthFt:20});
+ const d=day("2025-06-16",[slot(0),slot(3),slot(6)]);
+ const rS=generateAiringRecommendations(sm,[d],41);
+ const rL=generateAiringRecommendations(lg,[d],41);
+ console.log("T1 larger room longer interval:",rL.intervalMins>rS.intervalMins?"✅":"❌");}
+
+// T2: empty room → no airing windows
+{const r=makeRoom({occupancyLevel:"EMPTY"});const d=day("2025-06-16",[slot(0)]);
+ const res=generateAiringRecommendations(r,[d],41);
+ console.log("T2 empty→no airing:",!res.needsAiring?"✅":"❌");}
+
+// T3: rainy slots → marked high disruption (still included as least-bad)
+{const r=makeRoom();const d=day("2025-06-16",[slot(0,{precipProb:0.9}),slot(3,{precipProb:0.8}),slot(6,{precipProb:0.7})]);
+ const res=generateAiringRecommendations(r,[d],41);
+ console.log("T3 rain→high disruption:",res.windows.every(w=>w.disruption==="high")?"✅":"❌");}
+
+// T4: more people → shorter interval
+{const few=makeRoom({occupancyLevel:"ONE_TWO"});
+ const many=makeRoom({occupancyLevel:"THREE_FOUR"});
+ const d=day("2025-06-16",[slot(0),slot(3),slot(6)]);
+ const rF=generateAiringRecommendations(few,[d],41);
+ const rM=generateAiringRecommendations(many,[d],41);
+ console.log("T4 more people → shorter interval:",rM.intervalMins<rF.intervalMins?"✅":"❌");}
