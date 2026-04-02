@@ -91,34 +91,41 @@ export default function DashboardPage() {
 
   // ── Load / refresh a single room recommendation ────────────────────────────
 
-  const loadRec = useCallback(async (roomId: string) => {
+  const loadRec = useCallback(async (roomId: string, force = false) => {
     setRoomStates(prev => prev.map(s => s.room.id === roomId ? { ...s, loading:true, error:"" } : s));
     try {
-      const getRes  = await fetch(`/api/rooms/${roomId}/recommend`);
-      const getData = await getRes.json();
+      // On explicit refresh, skip the cache entirely and go straight to POST
+      if (!force) {
+        const getRes  = await fetch(`/api/rooms/${roomId}/recommend`);
+        const getData = await getRes.json();
 
-      if (getData.recommendation) {
-        const highF = getData.forecast?.days?.[0]?.highF;
-        const lowF  = getData.forecast?.days?.[0]?.lowF;
-        // Skip stale cache (high === low means forecastMeta predates the new schema)
-        if (highF == null || lowF == null || highF !== lowF) {
-          const rec: TodayRec = {
-            ...getData.recommendation,
-            airing:        getData.airing,
-            bpRange:       getData.bpRange,
-            bpSlots:       getData.bpSlots,
-            highF, lowF,
-            cityName:      getData.forecast?.cityName,
-            forecastDays:  getData.forecast?.days,
-            forecastSlots: getData.forecast?.slots,
-          };
-          setRoomStates(prev => prev.map(s => s.room.id === roomId ? { ...s, loading:false, rec, lastRefreshed:Date.now() } : s));
-          triggerSummary(roomId);
-          return;
+        if (getData.recommendation) {
+          const highF   = getData.forecast?.days?.[0]?.highF;
+          const lowF    = getData.forecast?.days?.[0]?.lowF;
+          const bpSlots = getData.bpSlots;
+          // Serve cache only if it has full data (bpSlots + valid forecast)
+          const hasFullData = highF != null && lowF != null && highF !== lowF
+                           && Array.isArray(bpSlots) && bpSlots.length > 0
+                           && (getData.forecast?.slots?.length ?? 0) > 0;
+          if (hasFullData) {
+            const rec: TodayRec = {
+              ...getData.recommendation,
+              airing:        getData.airing,
+              bpRange:       getData.bpRange,
+              bpSlots,
+              highF, lowF,
+              cityName:      getData.forecast?.cityName,
+              forecastDays:  getData.forecast?.days,
+              forecastSlots: getData.forecast?.slots,
+            };
+            setRoomStates(prev => prev.map(s => s.room.id === roomId ? { ...s, loading:false, rec, lastRefreshed:Date.now() } : s));
+            triggerSummary(roomId);
+            return;
+          }
         }
       }
 
-      // No cache or stale — fetch fresh
+      // No valid cache or forced refresh — fetch fresh from OWM
       const postRes  = await fetch(`/api/rooms/${roomId}/recommend`, { method:"POST" });
       const postData = await postRes.json();
       if (!postRes.ok) throw new Error(postData.error ?? "Failed.");
@@ -346,7 +353,7 @@ export default function DashboardPage() {
               state={state}
               today={today}
               nowHour={hour}
-              onRefresh={() => loadRec(state.room.id)}
+              onRefresh={() => loadRec(state.room.id, true)}
               onDelete={() => setDeleteTarget(state.room)}
               onToggleNotif={v => toggleNotif(state.room.id, v)}
             />
