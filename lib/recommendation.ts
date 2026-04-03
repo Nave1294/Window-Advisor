@@ -7,8 +7,27 @@ import { balancePointForSlot } from "./balance-point";
 const OPEN_THRESHOLD     = 55;
 const PRECIP_HARD_CUTOFF = 0.40;
 const DEW_POINT_CEILING  = 65;
-const MIN_OPEN_SLOTS     = 2;   // require at least 6h (2×3h slots) of good conditions
+const MIN_OPEN_SLOTS     = 1;   // a single 3-hour window is worth recommending
 const COMFORT_BIAS_CAP   = 5;
+
+/**
+ * Estimates what relative humidity outdoor air will have once it enters
+ * the building and warms to room temperature.
+ * Cold humid outdoor air becomes DRY indoor air when warmed — this is the
+ * physically correct comparison for ventilation comfort assessment.
+ */
+function indoorEquivRH(outdoorTempF: number, outdoorRH: number, indoorTempF: number): number {
+  const outdoorTempC = (outdoorTempF - 32) * 5 / 9;
+  const indoorTempC  = (indoorTempF  - 32) * 5 / 9;
+  const a = 17.27, b = 237.7;
+  // Dew point of outdoor air (°C) — absolute moisture content
+  const alpha = (a * outdoorTempC) / (b + outdoorTempC) + Math.log(Math.max(0.01, outdoorRH) / 100);
+  const dpC   = (b * alpha) / (a - alpha);
+  // Saturation vapor pressure ratio (relative) — drives indoor RH
+  const psatDP  = Math.exp(a * dpC    / (b + dpC));
+  const psatIn  = Math.exp(a * indoorTempC / (b + indoorTempC));
+  return Math.max(0, Math.min(100, (psatDP / psatIn) * 100));
+}
 
 export interface OpenPeriod { from: string; to: string; reason: string; multiDay: boolean; startDate: string; }
 
@@ -60,10 +79,13 @@ function scoreSlot(
   let tempScore = slot.tempF <= balancePt ? 40
     : Math.max(0, Math.round(40 * (1 - (slot.tempF - balancePt) / Math.max(room.maxTempF - balancePt, 1))));
 
+  // Use indoor-equivalent RH: outdoor air at slot.tempF/slot.humidity, warmed to room setpoint.
+  // Cold humid outdoor air (e.g. 49°F, 83% RH) becomes dry indoor air (~40% RH at 72°F).
+  const indoorRH    = indoorEquivRH(slot.tempF, slot.humidity, (room.minTempF + room.maxTempF) / 2);
   let humidScore = 0;
-  if      (slot.humidity >= room.minHumidity && slot.humidity <= room.maxHumidity) humidScore = 30;
-  else if (slot.humidity < room.minHumidity)  humidScore = Math.round(30 * (slot.humidity / room.minHumidity));
-  else    humidScore = Math.max(0, Math.round(30 * (1 - (slot.humidity - room.maxHumidity) / 30)));
+  if      (indoorRH >= room.minHumidity && indoorRH <= room.maxHumidity) humidScore = 30;
+  else if (indoorRH <  room.minHumidity) humidScore = Math.round(30 * (indoorRH / room.minHumidity));
+  else    humidScore = Math.max(0, Math.round(30 * (1 - (indoorRH - room.maxHumidity) / 30)));
 
   const dewScore    = Math.min(20, Math.round(Math.max(0, 20 * (1 - (slot.dewPointF - 55) / (DEW_POINT_CEILING - 55)))));
   const precipScore = Math.round(10 * (1 - slot.precipProb / PRECIP_HARD_CUTOFF));
@@ -72,16 +94,20 @@ function scoreSlot(
 }
 
 function buildReason(slots: HourlySlot[], room: Room, balancePt: number): string {
-  const avgTemp = Math.round(slots.map(s=>s.tempF).reduce((a,b)=>a+b,0)/slots.length);
-  const avgHum  = Math.round(slots.map(s=>s.humidity).reduce((a,b)=>a+b,0)/slots.length);
-  const maxPop  = Math.max(...slots.map(s=>s.precipProb));
-  const hasCB   = room.hasCrossBreeze && slots.some(s=>s.windSpeedMph>5);
+  const avgTemp    = Math.round(slots.map(s=>s.tempF).reduce((a,b)=>a+b,0)/slots.length);
+  const indoorRHs  = slots.map(s => indoorEquivRH(s.tempF, s.humidity, (room.minTempF + room.maxTempF) / 2));
+  const avgIndoorRH = Math.round(indoorRHs.reduce((a,b)=>a+b,0)/indoorRHs.length);
+  const maxPop     = Math.max(...slots.map(s=>s.precipProb));
+  const hasCB      = room.hasCrossBreeze && slots.some(s=>s.windSpeedMph>5);
   const parts: string[] = [];
   if (avgTemp <= balancePt) parts.push(`avg ${avgTemp}°F — below your balance point of ${balancePt}°F`);
   else                      parts.push(`avg ${avgTemp}°F — within your comfort zone`);
-  if (avgHum >= room.minHumidity && avgHum <= room.maxHumidity) parts.push(`humidity avg ${avgHum}% — in range`);
-  else if (avgHum < room.minHumidity) parts.push(`humidity low (avg ${avgHum}%)`);
-  else                                parts.push(`humidity slightly elevated (avg ${avgHum}%)`);
+  if (avgIndoorRH >= room.minHumidity && avgIndoorRH <= room.maxHumidity)
+    parts.push(`indoor humidity ~${avgIndoorRH}% — in range`);
+  else if (avgIndoorRH < room.minHumidity)
+    parts.push(`indoor humidity ~${avgIndoorRH}% — slightly dry`);
+  else
+    parts.push(`indoor humidity ~${avgIndoorRH}% — slightly elevated`);
   if (maxPop > 0.1) parts.push(`${Math.round(maxPop*100)}% rain chance`);
   else              parts.push("no meaningful rain risk");
   if (hasCB) parts.push("good cross-breeze");
@@ -146,7 +172,8 @@ export function generateRecommendation(
   flush();
 
   const todayScored = allScored.filter(s => s.date === today);
-  const shouldOpen  = todayScored.some(s => s.open);
+  // shouldOpen = there are valid open periods starting today (not just raw slot scores ≥ threshold)
+  const shouldOpen  = openPeriods.some(p => !p.startDate || p.startDate === today);
   const storedBP    = room.balancePoint ?? room.maxTempF - 20;
 
   const biasNote = Math.abs(bias) >= 0.5

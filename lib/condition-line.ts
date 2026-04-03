@@ -55,10 +55,8 @@ export function conditionLine(
   if (activePeriod) {
     const endLabel = fmtT(activePeriod.to);
     if (activePeriod.multiDay) {
-      const closeDay = activePeriod.startDate
-        ? dayLabel(activePeriod.startDate, today)
-        : "";
-      return `Good conditions now — open until ${endLabel}${closeDay && closeDay !== "today" ? ` ${closeDay}` : ""}.`;
+      // For multi-day periods, the `to` time already contains the day prefix (e.g. "Fri 2 AM")
+      return `Good conditions now — open until ${endLabel}.`;
     }
     return `Good conditions now until ${endLabel}.`;
   }

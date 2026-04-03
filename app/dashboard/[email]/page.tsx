@@ -161,12 +161,13 @@ export default function DashboardPage() {
       const today = todayDate();
       const hour  = nowHour();
       const todayPeriods = s.rec.openPeriods.filter(p => !p.startDate || p.startDate === today);
-      const cLine = conditionLine(s.rec.shouldOpen, s.rec.openPeriods, today, hour);
+      // Derive shouldOpen from today's periods only (not raw s.rec.shouldOpen which may be stale)
+      const hasOpenToday = todayPeriods.length > 0;
+      const cLine = conditionLine(hasOpenToday, s.rec.openPeriods, today, hour);
       fetch("/api/ai/room-summary", {
         method:"POST", headers:{ "Content-Type":"application/json" },
         body: JSON.stringify({
           roomName:      s.room.name,
-          shouldOpen:    s.rec.shouldOpen,
           openPeriods:   todayPeriods,
           highF:         s.rec.highF ?? 70,
           lowF:          s.rec.lowF  ?? 55,
@@ -222,35 +223,48 @@ export default function DashboardPage() {
     const today = todayDate();
     const hour  = nowHour();
 
-    // Deterministic fallback
+    // Deterministic fallback — uses conditionLine logic internally
     setHouseLine(wholeHouseLine(loaded.map(s => ({
-      name:s.room.name, shouldOpen:s.rec!.shouldOpen,
-      openPeriods:s.rec!.openPeriods, today, nowHour:hour,
+      name:        s.room.name,
+      shouldOpen:  s.rec!.openPeriods.some(p => !p.startDate || p.startDate === today),
+      openPeriods: s.rec!.openPeriods,
+      today,
+      nowHour:     hour,
     }))));
 
     const first = loaded.find(s => s.rec?.cityName)?.rec;
     if (!first?.cityName) return;
 
-    fetch("/api/ai/house-summary", {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({
-        rooms: loaded.map(s => ({
-          name: s.room.name,
-          shouldOpen: s.rec!.shouldOpen,
-          // Pass today's open periods so AI knows if anything is actually open today
-          todayPeriods: s.rec!.openPeriods.filter(p => !p.startDate || p.startDate === today),
-        })),
-        highF: first.highF ?? 70, lowF: first.lowF ?? 55, cityName: first.cityName,
-        today,
-      }),
-    }).then(r => r.json()).then(d => { if (d.text) setHouseLine(d.text); }).catch(() => {});
+    // Count rooms with open periods TODAY (not raw shouldOpen which may reflect future days)
+    const openTodayCount = loaded.filter(s =>
+      s.rec!.openPeriods.some(p => !p.startDate || p.startDate === today)
+    ).length;
 
+    // Only call AI house summary when something is actually open today
+    if (openTodayCount > 0) {
+      fetch("/api/ai/house-summary", {
+        method:"POST", headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({
+          rooms: loaded.map(s => ({
+            name:        s.room.name,
+            todayPeriods: s.rec!.openPeriods.filter(p => !p.startDate || p.startDate === today),
+          })),
+          highF: first.highF ?? 70, lowF: first.lowF ?? 55, cityName: first.cityName,
+          today,
+        }),
+      }).then(r => r.json()).then(d => { if (d.text) setHouseLine(d.text); }).catch(() => {});
+    }
+
+    // Greeting uses today-only open count so it doesn't say "2 rooms open" on a closed day
     fetch("/api/ai/greeting", {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({
-        date:today, cityName:first.cityName, highF:first.highF??70, lowF:first.lowF??55,
+        date: today, cityName: first.cityName, highF: first.highF ?? 70, lowF: first.lowF ?? 55,
         hourOfDay: hour,
-        rooms: loaded.map(s => ({ shouldOpen:s.rec!.shouldOpen, bpRange:s.rec?.bpRange ?? null })),
+        rooms: loaded.map(s => ({
+          shouldOpen:  s.rec!.openPeriods.some(p => !p.startDate || p.startDate === today),
+          bpRange:     s.rec?.bpRange ?? null,
+        })),
       }),
     }).then(r => r.json()).then(d => { if (d.text) setGreeting(d.text); }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps

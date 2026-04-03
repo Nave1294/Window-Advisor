@@ -41,8 +41,7 @@ function day(date:string,slots:HourlySlot[]):DayForecast {
  const res=generateRecommendation(makeRoom(),[d]);
  console.log("T2 rain→closed:",!res.shouldOpen?"✅":"❌");}
 
-// T3: MIN_OPEN_SLOTS=2 — single marginal slot should NOT trigger open
+// T3: MIN_OPEN_SLOTS=1 — a single good slot should now trigger open
 {const d=day("2025-06-16",[slot(0,{tempF:52}),slot(3,{tempF:80}),slot(6,{tempF:82}),slot(9,{tempF:84})]);
- const res=generateRecommendation(makeRoom(),[d]);
- // Only 1 slot is clearly good — with MIN_OPEN_SLOTS=2, this should stay closed
- console.log("T3 single slot→closed (MIN_OPEN_SLOTS=2):",!res.shouldOpen||res.openPeriods.length===0?"✅":"⚠️ single slot opened (may be OK depending on score)");}
+ const res=generateRecommendation(makeRoom(),[d],"2025-06-16");
+ console.log("T3 single good slot→open (MIN_OPEN_SLOTS=1):",res.shouldOpen&&res.openPeriods.length>0?"✅":"⚠️ unexpected");}

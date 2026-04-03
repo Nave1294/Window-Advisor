@@ -2,42 +2,40 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
-  const { roomName, shouldOpen, openPeriods, highF, lowF, bpRange, nowHour, conditionLine } = await req.json();
+  const { roomName, openPeriods, highF, lowF, bpRange, nowHour, conditionLine } = await req.json();
 
-  const hour = nowHour ?? 12;
-  const timeOfDay = hour < 12 ? "morning" : hour < 17 ? "afternoon" : hour < 21 ? "evening" : "night";
+  const hour       = nowHour ?? 12;
+  const timeOfDay  = hour < 12 ? "morning" : hour < 17 ? "afternoon" : hour < 21 ? "evening" : "night";
+  const hasPeriods = Array.isArray(openPeriods) && openPeriods.length > 0;
 
   const bpNote = bpRange?.label
-    ? `Balance point today: ${bpRange.label}. Only use if mentioning balance points.`
+    ? `Balance point: ${bpRange.label}. Only use if you mention balance points.`
     : "Do not mention balance point temperatures.";
 
-  const periodsStr = (openPeriods as {from:string;to:string}[])?.length
-    ? openPeriods.map((p:{from:string;to:string}) => `${p.from}–${p.to}`).join(", ")
-    : "none today";
+  const periodsStr = hasPeriods
+    ? (openPeriods as {from:string;to:string}[]).map(p => `${p.from}–${p.to}`).join(", ")
+    : "none";
 
-  // conditionLine is the single source of truth for timing/action
+  // conditionLine is authoritative — the AI sentence must agree with it
   const condNote = conditionLine
-    ? `THE FACTUAL STATUS (do not contradict this): "${conditionLine}"
-Your sentence must say the same thing about timing and action as this line.`
+    ? `REQUIRED — your sentence must match this exactly in timing and action:\n"${conditionLine}"`
     : "";
 
-  const prompt = `Write ONE short natural sentence (max 16 words) about this room's ventilation. Current time: ${timeOfDay}.
+  const prompt = `Write ONE short conversational sentence (max 15 words) about ventilation for ${roomName} this ${timeOfDay}.
 
-Room: ${roomName}
-Windows should be: ${shouldOpen ? "OPEN" : "CLOSED"}
-Today's open windows (if any): ${periodsStr}
+Open windows today: ${periodsStr}
 Forecast: High ${highF}°F, Low ${lowF}°F
 ${bpNote}
 
 ${condNote}
 
-RULES:
-- Agree exactly with the factual status line above — same timing, same action
-- Only describe TODAY, not future days
-- Never invent numbers not given above
-- No jargon
+Rules:
+- Match the required line above exactly — same action, same timing
+- Today only — never mention future days
+- No invented numbers
+- Natural, not robotic
 
-Write only the sentence.`;
+Sentence only.`;
 
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {

@@ -80,9 +80,9 @@ export function RoomCard({ state, today, nowHour, onRefresh, onDelete, onToggleN
 
   const airingWindows: AiringWindow[] = rec?.airing?.windows ?? rec?.airingWindows ?? [];
   const condLine = rec ? conditionLine(rec.shouldOpen, rec.openPeriods, today, nowHour) : "";
-  // Green only when conditions are actually useful today (not just on a future day)
-  const hasGoodConditionsToday = rec?.shouldOpen === true &&
-    rec.openPeriods.some(p => !p.startDate || p.startDate === today);
+  // Green = conditionLine confirms good conditions now or upcoming today
+  // This correctly handles past-periods-today and future-only periods
+  const hasGoodConditionsToday = condLine.startsWith("Good conditions");
 
   const updatedLabel = lastRefreshed ? (() => {
     const mins = Math.floor((Date.now() - lastRefreshed) / 60000);
